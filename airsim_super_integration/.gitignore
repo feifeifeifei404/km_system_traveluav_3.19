@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 日志
+*.log
+super_log.txt
+
+# 备份
+backup/
+backup_ros1_version/
+
+# 临时文件
+*.zip
+*.bak
+
+# ROS2 编译产物（不提交）
+build/
+install/
+log/

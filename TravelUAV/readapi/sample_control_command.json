@@ -1,0 +1,232 @@
+{
+  "description": "发送给AirSim模拟器的控制指令样例",
+  "timestamp": "2025-11-24T10:30:45.678901",
+  "command_type": "moveOnPathAsync",
+  
+  "waypoint_command": {
+    "description": "让无人机沿航点路径移动",
+    "api_call": "airsim.MultirotorClient.moveOnPathAsync()",
+    
+    "path": {
+      "description": "航点列表（世界坐标系）",
+      "format": "List[airsim.Vector3r]",
+      "waypoints": [
+        {
+          "x": 127.0,
+          "y": -90.5,
+          "z": -45.0
+        },
+        {
+          "x": 128.5,
+          "y": -91.2,
+          "z": -44.8
+        },
+        {
+          "x": 130.0,
+          "y": -91.8,
+          "z": -44.5
+        },
+        {
+          "x": 131.5,
+          "y": -91.9,
+          "z": -44.3
+        },
+        {
+          "x": 132.79,
+          "y": -91.79,
+          "z": -44.20
+        }
+      ],
+      "num_waypoints": 5,
+      "note": "从当前位置到目标位置的插值路径"
+    },
+    
+    "parameters": {
+      "velocity": 1.0,
+      "velocity_unit": "m/s",
+      "velocity_note": "无人机的移动速度",
+      
+      "drivetrain": "ForwardOnly",
+      "drivetrain_options": [
+        "ForwardOnly",
+        "MaxDegreeOfFreedom"
+      ],
+      "drivetrain_note": "ForwardOnly表示无人机始终朝向前进方向",
+      
+      "yaw_mode": {
+        "is_rate": false,
+        "yaw_or_rate": 0.0
+      },
+      "yaw_note": "偏航控制模式，is_rate=false表示绝对角度",
+      
+      "lookahead": 3,
+      "lookahead_unit": "waypoints",
+      "lookahead_note": "前瞻航点数量，用于路径跟踪",
+      
+      "adaptive_lookahead": 1,
+      "adaptive_lookahead_note": "自适应前瞻系数"
+    }
+  },
+  
+  "pose_command": {
+    "description": "直接设置无人机位姿（用于初始化或重置）",
+    "api_call": "airsim.MultirotorClient.simSetKinematics()",
+    
+    "state": {
+      "position": {
+        "x_val": 125.34,
+        "y_val": -89.67,
+        "z_val": -45.23
+      },
+      
+      "orientation": {
+        "x_val": 0.02,
+        "y_val": 0.01,
+        "z_val": 0.15,
+        "w_val": 0.98
+      },
+      
+      "linear_velocity": {
+        "x_val": 0.0,
+        "y_val": 0.0,
+        "z_val": 0.0
+      },
+      
+      "angular_velocity": {
+        "x_val": 0.0,
+        "y_val": 0.0,
+        "z_val": 0.0
+      }
+    },
+    
+    "parameters": {
+      "ignore_collision": false,
+      "ignore_collision_note": "是否忽略碰撞检测"
+    }
+  },
+  
+  "control_flags": {
+    "api_control_enabled": true,
+    "armed": true,
+    "paused": false
+  },
+  
+  "execution_flow": {
+    "steps": [
+      {
+        "step": 1,
+        "action": "enableApiControl(True)",
+        "description": "启用API控制"
+      },
+      {
+        "step": 2,
+        "action": "armDisarm(True)",
+        "description": "解锁电机"
+      },
+      {
+        "step": 3,
+        "action": "simPause(False)",
+        "description": "取消暂停模拟"
+      },
+      {
+        "step": 4,
+        "action": "moveOnPathAsync(path, velocity, ...)",
+        "description": "执行航点移动命令"
+      },
+      {
+        "step": 5,
+        "action": "监控移动状态",
+        "description": "等待到达目标或检测碰撞"
+      },
+      {
+        "step": 6,
+        "action": "simPause(True)",
+        "description": "到达后暂停模拟"
+      }
+    ]
+  },
+  
+  "monitoring": {
+    "description": "执行过程中的监控机制",
+    "checks": [
+      {
+        "type": "distance_check",
+        "condition": "distance_to_target < threshold",
+        "threshold": 0.5,
+        "threshold_unit": "meters",
+        "action": "停止移动，进入下一步"
+      },
+      {
+        "type": "collision_check",
+        "condition": "has_collided == True",
+        "action": "停止移动，标记失败"
+      },
+      {
+        "type": "stuck_check",
+        "condition": "delta_distance < 0.1 for 20 frames",
+        "action": "停止移动，标记卡住"
+      },
+      {
+        "type": "timeout_check",
+        "condition": "time_elapsed > 5 seconds",
+        "action": "停止移动，标记超时"
+      }
+    ]
+  },
+  
+  "coordinate_system": {
+    "system": "AirSim世界坐标系",
+    "convention": "NED (North-East-Down)",
+    "note": "所有坐标都是绝对世界坐标"
+  },
+  
+  "example_api_usage": {
+    "python_code": [
+      "import airsim",
+      "",
+      "client = airsim.MultirotorClient(ip='127.0.0.1', port=30001)",
+      "client.confirmConnection()",
+      "",
+      "# 启用控制",
+      "client.enableApiControl(True)",
+      "client.armDisarm(True)",
+      "client.simPause(False)",
+      "",
+      "# 构造航点路径",
+      "path = [",
+      "    airsim.Vector3r(127.0, -90.5, -45.0),",
+      "    airsim.Vector3r(128.5, -91.2, -44.8),",
+      "    airsim.Vector3r(130.0, -91.8, -44.5),",
+      "    airsim.Vector3r(131.5, -91.9, -44.3),",
+      "    airsim.Vector3r(132.79, -91.79, -44.20)",
+      "]",
+      "",
+      "# 执行移动",
+      "client.moveOnPathAsync(",
+      "    path=path,",
+      "    velocity=1.0,",
+      "    drivetrain=airsim.DrivetrainType.ForwardOnly,",
+      "    yaw_mode=airsim.YawMode(is_rate=False),",
+      "    lookahead=3,",
+      "    adaptive_lookahead=1",
+      ").join()",
+      "",
+      "# 暂停",
+      "client.simPause(True)"
+    ]
+  },
+  
+  "response_monitoring": {
+    "description": "执行后获取的反馈信息",
+    "state_query": {
+      "api_call": "client.getMultirotorState()",
+      "returns": {
+        "position": "当前位置",
+        "orientation": "当前姿态",
+        "velocity": "当前速度",
+        "collision": "碰撞信息"
+      }
+    }
+  }
+}
+

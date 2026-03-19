@@ -1,0 +1,880 @@
+{
+  "episode_id": 2,
+  "total_steps": 10,
+  "success": true,
+  "distance_to_goal": 5.2,
+  "collision": false,
+  "end_time": "2025-11-24T22:27:48.685005",
+  "steps": [
+    {
+      "step": 0,
+      "timestamp": "2025-11-24T22:27:48.685023",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          100.09495617176954,
+          -79.85385093725188,
+          -39.95667901750061
+        ],
+        "orientation": [
+          0.006944512195045551,
+          0.011263307644320195,
+          0.14288375784068116,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 0,
+      "timestamp": "2025-11-24T22:27:48.685031",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 0"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 0,
+      "timestamp": "2025-11-24T22:27:48.685084",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.946775763729778,
+        2.9800409113986666,
+        0.9933469704662222
+      ],
+      "waypoints_refined": [
+        7.937533686172576,
+        2.9835151273415947,
+        0.9509945782014807
+      ],
+      "waypoints_world": [
+        107.93753368617257,
+        -77.01648487265841,
+        -39.04900542179852
+      ]
+    },
+    {
+      "step": 1,
+      "timestamp": "2025-11-24T22:27:48.685093",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          101.56384819218287,
+          -79.15642216250419,
+          -39.70463520119206
+        ],
+        "orientation": [
+          0.035503923834418555,
+          0.003149435431880885,
+          0.16186877470518865,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 1,
+      "timestamp": "2025-11-24T22:27:48.685100",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 1"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 1,
+      "timestamp": "2025-11-24T22:27:48.685129",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.6290348352592705,
+        2.860888063222226,
+        0.9536293544074088
+      ],
+      "waypoints_refined": [
+        7.666651997272336,
+        2.942494863063766,
+        0.9187112362123903
+      ],
+      "waypoints_world": [
+        107.76160816904188,
+        -76.9113560741881,
+        -39.03796778128822
+      ]
+    },
+    {
+      "step": 2,
+      "timestamp": "2025-11-24T22:27:48.685136",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          104.40881736542984,
+          -77.45648498941303,
+          -39.24532072329371
+        ],
+        "orientation": [
+          0.024515049918410383,
+          0.0015735449891011236,
+          0.17431185938459268,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 2,
+      "timestamp": "2025-11-24T22:27:48.685142",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 2"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 2,
+      "timestamp": "2025-11-24T22:27:48.685166",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.449094117850743,
+        2.793410294194029,
+        0.9311367647313429
+      ],
+      "waypoints_refined": [
+        7.479610522682952,
+        2.7509532584970784,
+        0.7923739321769395
+      ],
+      "waypoints_world": [
+        109.04345871486582,
+        -76.40546890400711,
+        -38.912261269015126
+      ]
+    },
+    {
+      "step": 3,
+      "timestamp": "2025-11-24T22:27:48.685173",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          108.83550664993591,
+          -74.95751879255896,
+          -38.627843148923795
+        ],
+        "orientation": [
+          0.04063020432637314,
+          0.02659994766903722,
+          0.1555294755742604,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 3,
+      "timestamp": "2025-11-24T22:27:48.685178",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 3"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 3,
+      "timestamp": "2025-11-24T22:27:48.685201",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.9951922473657,
+        2.9981970927621373,
+        0.9993990309207125
+      ],
+      "waypoints_refined": [
+        7.91331595399545,
+        2.984057860677153,
+        0.9642529027354466
+      ],
+      "waypoints_world": [
+        112.32213331942529,
+        -74.47242712873587,
+        -38.28106782055826
+      ]
+    },
+    {
+      "step": 4,
+      "timestamp": "2025-11-24T22:27:48.685208",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          114.73847256769716,
+          -71.78034817612381,
+          -37.777144546033576
+        ],
+        "orientation": [
+          0.015721162036969622,
+          0.02256712692898602,
+          0.13744750863449806,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 4,
+      "timestamp": "2025-11-24T22:27:48.685213",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 4"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 4,
+      "timestamp": "2025-11-24T22:27:48.685236",
+      "type": "model_output",
+      "waypoints_llm": [
+        8.16750918985607,
+        3.062815946196026,
+        1.0209386487320087
+      ],
+      "waypoints_refined": [
+        8.306371682901686,
+        2.897397012118461,
+        1.1035168522173269
+      ],
+      "waypoints_world": [
+        117.14187833283759,
+        -72.0601217804405,
+        -37.52432629670647
+      ]
+    },
+    {
+      "step": 5,
+      "timestamp": "2025-11-24T22:27:48.685243",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          122.34530788581387,
+          -67.90403992659976,
+          -36.837596603156946
+        ],
+        "orientation": [
+          0.01921461142740245,
+          0.0038208897453512903,
+          0.1434064594133686,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 5,
+      "timestamp": "2025-11-24T22:27:48.685248",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 5"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 5,
+      "timestamp": "2025-11-24T22:27:48.685270",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.287327895925558,
+        2.7327479609720844,
+        0.9109159869906948
+      ],
+      "waypoints_refined": [
+        7.275156684136802,
+        2.831344993961547,
+        0.7846918652749587
+      ],
+      "waypoints_world": [
+        122.01362925183396,
+        -68.94900318216226,
+        -36.99245268075862
+      ]
+    },
+    {
+      "step": 6,
+      "timestamp": "2025-11-24T22:27:48.685278",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          131.29422677692443,
+          -63.05049170924718,
+          -35.60738455115678
+        ],
+        "orientation": [
+          0.010972108582741155,
+          0.0293300293840908,
+          0.1634783473477766,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 6,
+      "timestamp": "2025-11-24T22:27:48.685293",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 6"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 6,
+      "timestamp": "2025-11-24T22:27:48.685320",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.84796917480438,
+        2.9429884405516424,
+        0.9809961468505475
+      ],
+      "waypoints_refined": [
+        7.800771227036935,
+        2.9340888939694754,
+        0.9018164756148951
+      ],
+      "waypoints_world": [
+        130.1460791128508,
+        -64.96995103263029,
+        -35.93578012754205
+      ]
+    },
+    {
+      "step": 7,
+      "timestamp": "2025-11-24T22:27:48.685328",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          141.86992865657206,
+          -57.584121516602224,
+          -34.23521027302635
+        ],
+        "orientation": [
+          0.026212025023636527,
+          0.013079224819583585,
+          0.14908518812144786,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 7,
+      "timestamp": "2025-11-24T22:27:48.685333",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 7"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 7,
+      "timestamp": "2025-11-24T22:27:48.685357",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.533789563145336,
+        2.825171086179501,
+        0.941723695393167
+      ],
+      "waypoints_refined": [
+        7.543229708884958,
+        2.8885813451620983,
+        0.8689338038828751
+      ],
+      "waypoints_world": [
+        138.83745648580938,
+        -60.16191036408509,
+        -34.7384507472739
+      ]
+    },
+    {
+      "step": 8,
+      "timestamp": "2025-11-24T22:27:48.685363",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          153.81127827602722,
+          -51.15372777683206,
+          -32.59891125028208
+        ],
+        "orientation": [
+          0.01960733353327463,
+          0.0127804357724318,
+          0.15517209630854556,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 8,
+      "timestamp": "2025-11-24T22:27:48.685369",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 8"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 8,
+      "timestamp": "2025-11-24T22:27:48.685391",
+      "type": "model_output",
+      "waypoints_llm": [
+        6.804235345497971,
+        2.551588254561739,
+        0.8505294181872464
+      ],
+      "waypoints_refined": [
+        6.698425083029574,
+        2.5137097165462787,
+        0.7179901502512142
+      ],
+      "waypoints_world": [
+        148.56835373960163,
+        -55.07041180005594,
+        -33.517220122775136
+      ]
+    },
+    {
+      "step": 9,
+      "timestamp": "2025-11-24T22:27:48.685398",
+      "type": "observation",
+      "sensors": {
+        "position": [
+          167.43747416826614,
+          -43.93533045278061,
+          -30.747002397437598
+        ],
+        "orientation": [
+          0.01654172848095715,
+          0.008853379532236813,
+          0.1463935632140508,
+          0.98
+        ],
+        "linear_velocity": [
+          1.2,
+          0.5,
+          0.1
+        ],
+        "collision": {
+          "has_collided": false,
+          "object_name": ""
+        }
+      },
+      "rgb_info": {
+        "num_images": 5,
+        "shape": [
+          256,
+          256,
+          3
+        ],
+        "dtype": "uint8"
+      }
+    },
+    {
+      "step": 9,
+      "timestamp": "2025-11-24T22:27:48.685403",
+      "type": "model_input",
+      "input_ids": {
+        "shape": [
+          1,
+          512
+        ],
+        "dtype": "torch.int64",
+        "device": "cuda:0"
+      },
+      "prompts": [
+        "Navigate to the target. Current step: 9"
+      ],
+      "images": {
+        "type": "tensor_list",
+        "length": 1,
+        "shapes": [
+          [
+            5,
+            3,
+            224,
+            224
+          ]
+        ],
+        "dtypes": [
+          "torch.bfloat16"
+        ]
+      }
+    },
+    {
+      "step": 9,
+      "timestamp": "2025-11-24T22:27:48.685425",
+      "type": "model_output",
+      "waypoints_llm": [
+        7.185961379339677,
+        2.694735517252379,
+        0.8982451724174596
+      ],
+      "waypoints_refined": [
+        7.269337108390465,
+        2.823850882747253,
+        0.8268398640120915
+      ],
+      "waypoints_world": [
+        161.08061538441768,
+        -48.32987689408481,
+        -31.77207138626999
+      ]
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+# ============================
+# 仿真场景（几十GB，不提交）
+# ============================
+TravelUAV/envs/
+
+# ============================
+# 模型权重（几十GB，不提交）
+# ============================
+TravelUAV/Model/
+
+# ============================
+# 数据集（不提交）
+# ============================
+TravelUAV/Dataset/
+TravelUAV/my_dataset/
+
+# ============================
+# 运行结果和临时文件（不提交）
+# ============================
+TravelUAV/result/
+TravelUAV/result-01/
+TravelUAV/result111/
+TravelUAV/logs/
+TravelUAV/debug_data/
+TravelUAV/_traces/
+TravelUAV/tmp*/
+TravelUAV/_traces/
+TravelUAV/draw_image/
+TravelUAV/readapi/debug_data/
+TravelUAV/fast/
+TravelUAV/jicheng/
+TravelUAV/wandb*/
+
+# ============================
+# super_ws 编译产物（不提交）
+# ============================
+super_ws/build/
+super_ws/install/
+super_ws/log/
+
+# ============================
+# 其他无关目录
+# ============================
+SUPER-master/
+z_beifen/
+backup_ros1_version/
+connected/
+jiancha/
+super_logs/
+
+# ============================
+# 通用排除
+# ============================
+*.zip
+*.bak
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.pth
+*.bin
+*.pt
+*.onnx
+*.pptx
+*.png
+*.jpg
+*.jpeg
+.vscode/

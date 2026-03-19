@@ -1,0 +1,53 @@
+# Python 虚拟环境 (最重要！)
+envs/
+
+# Python 缓存和打包
+__pycache__/
+*.pyc
+*.egg-info
+dist/
+
+# 日志文件
+*.log
+*.log.*
+*.jsonl
+
+# 编辑器配置
+.idea/
+*.swp
+.vscode/
+
+# 操作系统文件
+.DS_Store
+
+# 实验追踪、输出和缓存
+wandb/
+output/
+work_dirs/
+model_zoo/
+settings/
+checkpoints/
+ckpts*/
+.ipynb_checkpoints/
+# *.ipynb  <-- 警告：这会忽略所有 Notebook，如果您需要它们，请删除本行
+
+# 数据集和结果 (您的项目特定)
+data/
+Dataset/
+result/
+result-*/
+result111/
+draw_image/
+logs/
+
+# 大型模型权重 (来自您的配置)
+Model/**/*.pth
+Model/**/*.pt
+Model/**/*.bin
+Model/**/*.safetensors
+Model/LLaMA-UAV/work_dirs/
+src/model_wrapper/utils/GroundingDINO/groundingdino_swint_ogc.pth
+
+# 环境和打包文件
+envs/*_zips/
+wheels/

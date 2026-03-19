@@ -1,0 +1,148 @@
+{
+  "description": "大模型推理输出的数据样例",
+  "batch_size": 2,
+  "timestamp": "2025-11-24T10:30:45.567890",
+  
+  "llm_output_raw": {
+    "description": "LLM直接输出的原始航点",
+    "shape": "[batch_size, 4]",
+    "dtype": "numpy.float32",
+    "format": "[dx, dy, dz, distance]",
+    "values": [
+      [0.85, -0.23, 0.12, 8.5],
+      [0.92, 0.15, -0.08, 12.3]
+    ],
+    "note": "前3个值是相对方向（未归一化），第4个值是预测的移动距离"
+  },
+  
+  "llm_output_normalized": {
+    "description": "归一化后的LLM航点",
+    "shape": "[batch_size, 3]",
+    "dtype": "numpy.float32",
+    "computation": "(dx, dy, dz) / norm(dx, dy, dz) * distance",
+    "values": [
+      [7.56, -2.05, 1.07],
+      [11.22, 1.83, -0.98]
+    ],
+    "note": "方向向量归一化后乘以距离，得到实际的相对位移"
+  },
+  
+  "traj_model_input": {
+    "description": "轨迹模型的输入",
+    "img": {
+      "shape": "[batch_size, 3, 224, 224]",
+      "dtype": "torch.bfloat16",
+      "source": "当前步的前视相机图像",
+      "preprocessing": "CLIP ViT预处理"
+    },
+    "target": {
+      "shape": "[batch_size, 3]",
+      "dtype": "torch.bfloat16",
+      "values": [
+        [7.56, -2.05, 1.07],
+        [11.22, 1.83, -0.98]
+      ],
+      "note": "来自LLM归一化输出，经过坐标系转换"
+    }
+  },
+  
+  "traj_model_output": {
+    "description": "轨迹模型精化后的航点（相对坐标）",
+    "shape": "[batch_size, 3]",
+    "dtype": "torch.bfloat16 -> numpy.float32",
+    "values": [
+      [7.45, -2.12, 1.03],
+      [11.18, 1.79, -0.95]
+    ],
+    "note": "轨迹模型对LLM输出进行了微调"
+  },
+  
+  "waypoints_world": {
+    "description": "转换到世界坐标系的最终航点",
+    "shape": "[batch_size, 3]",
+    "dtype": "numpy.float32",
+    "computation": "rot_matrix @ waypoint_relative + current_position",
+    "values": [
+      [132.79, -91.79, -44.20],
+      [100.30, -118.66, -39.85]
+    ],
+    "note": "这是发送给模拟器的最终目标位置"
+  },
+  
+  "transformation_details": {
+    "sample_0": {
+      "current_position": [125.34, -89.67, -45.23],
+      "rotation_matrix": [
+        [0.9998, -0.0175, 0.0087],
+        [0.0175, 0.9998, -0.0035],
+        [-0.0087, 0.0035, 0.9999]
+      ],
+      "waypoint_relative": [7.45, -2.12, 1.03],
+      "waypoint_world": [132.79, -91.79, -44.20],
+      "transformation": "waypoint_world = rotation @ waypoint_relative + position"
+    }
+  },
+  
+  "intermediate_outputs": {
+    "description": "中间输出，用于调试和分析",
+    "waypoints_llm_new": {
+      "shape": "[batch_size, 3]",
+      "note": "LLM归一化后的输出"
+    },
+    "Img_input_for_traj_model": {
+      "shape": "[batch_size, 3, 224, 224]",
+      "note": "轨迹模型的图像输入"
+    },
+    "Target_input_for_traj_model": {
+      "shape": "[batch_size, 3]",
+      "note": "轨迹模型的目标输入"
+    },
+    "waypoints_traj_output": {
+      "shape": "[batch_size, 3]",
+      "note": "轨迹模型的原始输出（torch.Tensor）"
+    }
+  },
+  
+  "model_info": {
+    "llm_model": "LLaMA-UAV",
+    "llm_precision": "bfloat16",
+    "llm_inference_time_ms": 198.5,
+    
+    "traj_model": "VisionTrajectoryGenerator",
+    "traj_precision": "bfloat16",
+    "traj_inference_time_ms": 47.3,
+    
+    "total_inference_time_ms": 245.8
+  },
+  
+  "confidence_scores": {
+    "description": "模型的置信度评分（如果可用）",
+    "note": "当前实现可能不包含显式置信度分数",
+    "available": false
+  },
+  
+  "coordinate_systems": {
+    "model_output": {
+      "system": "相对坐标系（以当前无人机为原点）",
+      "axes": "前-左-上 (Forward-Left-Up)"
+    },
+    "world_output": {
+      "system": "AirSim世界坐标系",
+      "axes": "NED (North-East-Down)",
+      "unit": "meters"
+    }
+  },
+  
+  "quality_metrics": {
+    "llm_vs_traj_diff": {
+      "sample_0": {
+        "euclidean_distance": 0.15,
+        "note": "LLM和轨迹模型输出的欧氏距离"
+      },
+      "sample_1": {
+        "euclidean_distance": 0.08
+      }
+    }
+  }
+}
+

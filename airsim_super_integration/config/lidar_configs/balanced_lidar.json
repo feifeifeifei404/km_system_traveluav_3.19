@@ -1,0 +1,25 @@
+{
+  "// 平衡配置 - 适合性能一般的电脑": "",
+  "Lidar1": {
+    "SensorType": 6,
+    "Enabled": true,
+    "NumberOfChannels": 32,
+    "RotationsPerSecond": 10,
+    "PointsPerSecond": 200000,
+    "MaxDistance": 5000,
+    "DrawDebugPoints": true,
+    "VerticalFOVUpper": 20,
+    "VerticalFOVLower": -20,
+    "HorizontalFOVStart": 0,
+    "HorizontalFOVEnd": 359,
+    "X": 0,
+    "Y": 0,
+    "Z": -0.5,
+    "Roll": 0,
+    "Pitch": 0,
+    "Yaw": 0,
+    "DataFrame": "SensorLocalFrame"
+  }
+}
+
+

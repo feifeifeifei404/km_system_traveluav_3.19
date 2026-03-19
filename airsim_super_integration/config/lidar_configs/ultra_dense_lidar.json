@@ -1,0 +1,25 @@
+{
+  "// 超高密度配置 - 适合高性能电脑": "",
+  "Lidar1": {
+    "SensorType": 6,
+    "Enabled": true,
+    "NumberOfChannels": 128,
+    "RotationsPerSecond": 20,
+    "PointsPerSecond": 500000,
+    "MaxDistance": 3000,
+    "DrawDebugPoints": true,
+    "VerticalFOVUpper": 45,
+    "VerticalFOVLower": -45,
+    "HorizontalFOVStart": 0,
+    "HorizontalFOVEnd": 359,
+    "X": 0,
+    "Y": 0,
+    "Z": -0.5,
+    "Roll": 0,
+    "Pitch": 0,
+    "Yaw": 0,
+    "DataFrame": "SensorLocalFrame"
+  }
+}
+
+

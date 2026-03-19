@@ -1,0 +1,115 @@
+{
+  "description": "发送给大模型的输入数据样例",
+  "batch_size": 2,
+  "timestamp": "2025-11-24T10:30:45.234567",
+  
+  "input_ids": {
+    "description": "Token ID序列",
+    "shape": "[batch_size, seq_len]",
+    "dtype": "torch.int64",
+    "example_shape": "[2, 512]",
+    "note": "文本tokenize后的ID序列，实际为torch.Tensor"
+  },
+  
+  "attention_mask": {
+    "description": "注意力掩码",
+    "shape": "[batch_size, seq_len]", 
+    "dtype": "torch.int64",
+    "example_shape": "[2, 512]",
+    "values": "1表示有效token，0表示padding",
+    "note": "实际为torch.Tensor"
+  },
+  
+  "prompts": [
+    {
+      "batch_idx": 0,
+      "text": "You are an AI assistant helping navigate a drone. Based on the current observation and history, navigate to the red building.\n\nStage: intermediate\nCurrent Position: [125.34, -89.67, -45.23]\nLast Movement: Moved forward 1.2m, left 0.3m\nTarget: Red building at approximately [150.5, -95.2, -42.0]\nDistance to Goal: 28.73m\n\nProvide the next waypoint as relative coordinates (dx, dy, dz) and distance.",
+      "note": "完整的提示文本，包含任务、状态、目标信息"
+    },
+    {
+      "batch_idx": 1,
+      "text": "You are an AI assistant helping navigate a drone. Based on the current observation and history, find the blue car.\n\nStage: early\nCurrent Position: [89.12, -120.45, -38.90]\nLast Movement: Initial position\nTarget: Blue car location unknown\nDistance to Goal: unknown\n\nProvide the next waypoint as relative coordinates (dx, dy, dz) and distance."
+    }
+  ],
+  
+  "images": {
+    "description": "处理后的图像张量列表",
+    "num_samples": 2,
+    "dtype": "torch.bfloat16",
+    "per_sample": {
+      "shape": "[num_frames, 3, 224, 224]",
+      "num_frames": 5,
+      "num_frames_note": "5个历史帧 + 当前帧的拼接/选择",
+      "channels": 3,
+      "spatial_size": 224,
+      "preprocessing": "归一化到[-1, 1]，resize到224x224"
+    },
+    "note": "每个样本包含多帧图像，实际为torch.Tensor列表"
+  },
+  
+  "historys": {
+    "description": "历史轨迹编码",
+    "num_samples": 2,
+    "dtype": "torch.bfloat16",
+    "per_sample": {
+      "shape": "[history_len, hidden_dim]",
+      "history_len": 10,
+      "hidden_dim": 4096,
+      "encoding": "位置、速度、方向等传感器数据的编码"
+    },
+    "note": "实际为torch.Tensor列表"
+  },
+  
+  "orientations": {
+    "description": "当前姿态（四元数）",
+    "shape": "[batch_size, 4]",
+    "dtype": "torch.bfloat16",
+    "example_values": [
+      [0.02, 0.01, 0.15, 0.98],
+      [0.01, -0.02, 0.08, 0.99]
+    ],
+    "format": "[qx, qy, qz, qw]",
+    "note": "实际为torch.Tensor"
+  },
+  
+  "return_waypoints": {
+    "description": "控制标志：是否返回航点",
+    "value": true,
+    "type": "bool"
+  },
+  
+  "use_cache": {
+    "description": "控制标志：是否使用KV缓存",
+    "value": false,
+    "type": "bool",
+    "note": "评估时通常为False"
+  },
+  
+  "additional_context": {
+    "episode_ids": ["NYC_seq_0042", "ModernCity_seq_0103"],
+    "map_names": ["NewYorkCity", "ModernCityMap"],
+    "instructions": [
+      "Navigate to the red building on your left and stop near its entrance.",
+      "Find the blue car and approach it from the front."
+    ]
+  },
+  
+  "preprocessing_info": {
+    "tokenizer": "LLaMA tokenizer",
+    "image_processor": "CLIP ViT-G/14",
+    "special_tokens": {
+      "waypoint": "<wp>",
+      "history": "<his>",
+      "image": "<image>"
+    }
+  },
+  
+  "dimensions_summary": {
+    "input_ids": "[2, 512]",
+    "attention_mask": "[2, 512]", 
+    "images": "List of [5, 3, 224, 224]",
+    "historys": "List of [10, 4096]",
+    "orientations": "[2, 4]"
+  }
+}
+

@@ -1,0 +1,117 @@
+{
+  "description": "AirSim模拟器获取的单步观测数据样例",
+  "timestamp": "2025-11-24T10:30:45.123456",
+  "step": 5,
+  
+  "rgb": {
+    "description": "5个视角的RGB图像，实际为numpy数组",
+    "shape": "[5, 256, 256, 3]",
+    "dtype": "uint8",
+    "cameras": [
+      "FrontCamera",
+      "LeftCamera", 
+      "RightCamera",
+      "RearCamera",
+      "DownCamera"
+    ],
+    "note": "实际数据为numpy数组，这里仅展示元信息"
+  },
+  
+  "depth": {
+    "description": "5个视角的深度图",
+    "shape": "[5, 256, 256]",
+    "dtype": "uint8",
+    "range": "0-255 (对应0-100米)",
+    "cameras": [
+      "FrontCamera_depth",
+      "LeftCamera_depth",
+      "RightCamera_depth", 
+      "RearCamera_depth",
+      "DownCamera_depth"
+    ]
+  },
+  
+  "sensors": {
+    "state": {
+      "position": [125.34, -89.67, -45.23],
+      "position_unit": "meters",
+      "position_note": "世界坐标系中的3D位置",
+      
+      "orientation": [0.02, 0.01, 0.15, 0.98],
+      "orientation_format": "[qx, qy, qz, qw]",
+      "orientation_note": "四元数表示的姿态",
+      
+      "linear_velocity": [1.2, 0.3, -0.1],
+      "linear_velocity_unit": "m/s",
+      
+      "angular_velocity": [0.05, 0.02, 0.1],
+      "angular_velocity_unit": "rad/s",
+      
+      "linear_acceleration": [0.1, 0.05, -9.8],
+      "linear_acceleration_unit": "m/s²",
+      
+      "angular_acceleration": [0.01, 0.0, 0.02],
+      "angular_acceleration_unit": "rad/s²",
+      
+      "collision": {
+        "has_collided": false,
+        "object_name": "",
+        "note": "碰撞检测结果"
+      },
+      
+      "gps_location": [40.7128, -74.0060, 100.5],
+      "gps_note": "[latitude, longitude, altitude]"
+    },
+    
+    "imu": {
+      "rotation": [
+        [0.9998, -0.0175, 0.0087],
+        [0.0175, 0.9998, -0.0035],
+        [-0.0087, 0.0035, 0.9999]
+      ],
+      "rotation_note": "3x3旋转矩阵，从机体坐标系到世界坐标系",
+      
+      "orientation": [0.02, 0.01, 0.15, 0.98],
+      "orientation_note": "四元数 [x, y, z, w]",
+      
+      "linear_acceleration": [0.1, 0.05, -9.8],
+      "angular_velocity": [0.05, 0.02, 0.1],
+      
+      "time_stamp": 1234567890123456789
+    }
+  },
+  
+  "task_info": {
+    "instruction": "Navigate to the red building on your left and stop near its entrance.",
+    "instruction_cn": "导航到你左边的红色建筑物，并在其入口附近停下。",
+    
+    "object_position": [150.5, -95.2, -42.0],
+    "object_position_note": "目标物体的世界坐标",
+    
+    "distance_to_goal": 28.73,
+    "distance_unit": "meters",
+    
+    "map_name": "NewYorkCity",
+    "episode_id": "NYC_seq_0042"
+  },
+  
+  "trajectory_history": {
+    "description": "历史轨迹点（最近10步）",
+    "positions": [
+      [120.1, -85.2, -45.0],
+      [121.5, -86.0, -45.1],
+      [122.8, -86.9, -45.2],
+      [124.0, -88.0, -45.2],
+      [125.3, -89.7, -45.2]
+    ],
+    "note": "每个位置对应一个历史步"
+  },
+  
+  "metadata": {
+    "simulator": "AirSim",
+    "vehicle": "Multirotor",
+    "clock_speed": 10,
+    "physics_engine": "ExternalPhysicsEngine"
+  }
+}
+
