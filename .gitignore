@@ -24,7 +24,6 @@ TravelUAV/logs/
 TravelUAV/debug_data/
 TravelUAV/_traces/
 TravelUAV/tmp*/
-TravelUAV/_traces/
 TravelUAV/draw_image/
 TravelUAV/readapi/debug_data/
 TravelUAV/fast/
