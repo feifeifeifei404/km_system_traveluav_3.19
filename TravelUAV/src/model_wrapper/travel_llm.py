@@ -6,6 +6,26 @@ from src.model_wrapper.utils.travel_util import *
 from src.vlnce_src.dino_monitor_online import DinoMonitor
 
 
+def llm_waypoints_to_world(waypoints_llm_new, episodes, rot_to_targets):
+    waypoints_world = []
+    for i in range(len(waypoints_llm_new)):
+        local_waypoint = np.asarray(waypoints_llm_new[i][0:3], dtype=np.float32)
+        episode = episodes[i]
+        start_rot = np.array(episode[0]["sensors"]["imu"]["rotation"])
+        current_pos = np.array(episode[-1]["sensors"]["state"]["position"])
+        rotation_to_target = rot_to_targets[i] if rot_to_targets is not None else None
+
+        if rotation_to_target is not None:
+            world_delta = start_rot @ np.array(rotation_to_target) @ local_waypoint
+        else:
+            world_delta = start_rot @ local_waypoint
+
+        waypoint_world = current_pos + world_delta
+        waypoints_world.append(waypoint_world)
+
+    return np.array(waypoints_world)
+
+
 # 把大模型（LLM）和轨迹回归模型（Trajectory Model）组合起来使用，完成路径规划任务的推理流程
 class TravelModelWrapper(BaseModelWrapper):
 
@@ -190,20 +210,16 @@ class TravelModelWrapper(BaseModelWrapper):
     def run(self, inputs, episodes, rot_to_targets):  # inputs：输入数据；episodes：UAV任务的轨迹数据；rot_to_targets：表示当前轨迹点与目标点之间的旋转信息（用于计算朝向
         
         waypoints_llm_new = self.run_llm_model(inputs)# 将输入数据传入语言模型（LLM）进行推理，获得初步的路径点 waypoints_llm_new
-        # 将 temperature 传递给 LLM 模型
-        
-        refined_waypoints, traj_model_inputs, waypoints_traj = self.run_traj_model(episodes, waypoints_llm_new, rot_to_targets)  # 将 waypoints_llm_new与其他任务信息（episodes 和 rot_to_targets）一起传入轨迹模型进行进一步优化，生成更精确的路径点
-        # debugpy.breakpoint()  # 断点3: 精化世界坐标 refined_waypoints
-        # 3. 将所有需要保存的中间变量打包到一个字典中
+        waypoints_world = llm_waypoints_to_world(waypoints_llm_new, episodes, rot_to_targets)
         intermediate_outputs = {
-            "waypoints_llm_new": waypoints_llm_new,
-            "Img_input_for_traj_model": traj_model_inputs.get("img"),  # 使用 .get() 更安全
-            "Target_input_for_traj_model": traj_model_inputs.get("target"),
-            "waypoints_traj_output": waypoints_traj,
-            "refined_waypoints_final": refined_waypoints,
+            "waypoints_llm_new": waypoints_world,
+            "Img_input_for_traj_model": None,
+            "Target_input_for_traj_model": None,
+            "waypoints_traj_output": None,
+            "refined_waypoints_final": waypoints_world,
         }
 
-        return refined_waypoints, intermediate_outputs
+        return waypoints_world, intermediate_outputs
 
     # 判断任务是否完成
     def predict_done(self, episodes, object_infos):

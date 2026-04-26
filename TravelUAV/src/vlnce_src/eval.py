@@ -46,9 +46,9 @@ from src.vlnce_src.scoring_util import score_and_select_best_waypoint
 from src.model_wrapper.utils.travel_util import transform_to_world
 
 # =========================================================================
-#  [新增模块] SUPER 集成通信与控制模块
+#  [新增模块] SUPER 集成通信模块：仅负责给 SUPER2 发局部目标
 # =========================================================================
-from src.vlnce_src.super_ros2_client import get_super_ros2_client
+from src.vlnce_src.super_ros2_client import get_super_ros2_client, compute_super_goal_offset
 
 # def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0):
 #     """
@@ -90,24 +90,110 @@ from src.vlnce_src.super_ros2_client import get_super_ros2_client
 #     logger.warning("[Wait] Timeout! SUPER might be stuck or path is too long.")
 #     return False
 
-def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, record_interval=0.5):
+def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, record_interval=0.1):
     """
-    等待SUPER飞行到目标点（使用ROS2客户端）
-    
+    等待 SUPER 执行，但轨迹记录/碰撞判断/到达判断全部基于 AirSim 真值。
+
     返回：
         success (bool): 是否成功到达
-        trajectory (list): 飞行轨迹（ROS2版本返回空列表）
+        trajectory (list): 基于 AirSim 真值记录的轨迹
         collision_detected (bool): 是否检测到碰撞/卡住
     """
-    super_client = get_super_ros2_client()
-    
-    # 调用ROS2客户端的wait_for_arrival（内部按 record_interval 记录轨迹）
-    success, status, trajectory = super_client.wait_for_arrival(
-        target_pos, threshold, timeout, check_interval=record_interval, record_interval=record_interval
-    )
+    start_time = time.time()
+    logger.info(f"[Wait] Waiting for SUPER to fly to {np.round(target_pos, 2)}...")
 
-    collision_detected = (status == "STUCK")
-    return success, trajectory, collision_detected
+    temp_client = airsim.MultirotorClient(port=25001)
+    temp_client.confirmConnection()
+
+    trajectory = []
+    last_record_time = 0.0
+    collision_detected = False
+
+    last_check_pos = None
+    last_check_time = time.time()
+    stuck_timeout = 15.0
+
+    while time.time() - start_time < timeout:
+        try:
+            state = temp_client.getMultirotorState()
+            pos = state.kinematics_estimated.position
+            orient = state.kinematics_estimated.orientation
+            curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
+
+            if time.time() - last_record_time >= record_interval:
+                trajectory.append({
+                    'sensors': {
+                        'state': {
+                            'position': [pos.x_val, pos.y_val, pos.z_val],
+                            'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
+                            'linear_velocity': [
+                                state.kinematics_estimated.linear_velocity.x_val,
+                                state.kinematics_estimated.linear_velocity.y_val,
+                                state.kinematics_estimated.linear_velocity.z_val,
+                            ],
+                            'angular_velocity': [
+                                state.kinematics_estimated.angular_velocity.x_val,
+                                state.kinematics_estimated.angular_velocity.y_val,
+                                state.kinematics_estimated.angular_velocity.z_val,
+                            ],
+                            'collision': {
+                                'has_collided': bool(state.collision.has_collided),
+                                'object_name': str(state.collision.object_name),
+                            },
+                        }
+                    }
+                })
+                last_record_time = time.time()
+
+            if state.collision.has_collided:
+                collision_detected = True
+                logger.warning('[Wait] Collision detected during flight!')
+
+            if time.time() - last_check_time > stuck_timeout:
+                if last_check_pos is not None:
+                    movement = np.linalg.norm(curr_pos - last_check_pos)
+                    if movement < 0.5:
+                        logger.error(f'[Wait] CRITICAL: Drone stuck! Moved {movement:.2f}m in {stuck_timeout}s')
+                        return False, trajectory, True
+                last_check_pos = curr_pos.copy()
+                last_check_time = time.time()
+
+            dist = np.linalg.norm(curr_pos - np.array(target_pos, dtype=np.float64))
+            if dist < threshold:
+                logger.info(f'[Wait] Arrived! Final Dist: {dist:.2f}m')
+                trajectory.append({
+                    'sensors': {
+                        'state': {
+                            'position': [pos.x_val, pos.y_val, pos.z_val],
+                            'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
+                            'linear_velocity': [
+                                state.kinematics_estimated.linear_velocity.x_val,
+                                state.kinematics_estimated.linear_velocity.y_val,
+                                state.kinematics_estimated.linear_velocity.z_val,
+                            ],
+                            'angular_velocity': [
+                                state.kinematics_estimated.angular_velocity.x_val,
+                                state.kinematics_estimated.angular_velocity.y_val,
+                                state.kinematics_estimated.angular_velocity.z_val,
+                            ],
+                            'collision': {
+                                'has_collided': bool(state.collision.has_collided),
+                                'object_name': str(state.collision.object_name),
+                            },
+                        }
+                    }
+                })
+                time.sleep(1.0)
+                return True, trajectory, collision_detected
+
+        except Exception as e:
+            logger.warning(f'[Wait] Temp client failed: {e}')
+            time.sleep(1.0)
+
+        time.sleep(0.2)
+
+    logger.warning('[Wait] Timeout!')
+    return False, trajectory, collision_detected
 
 
 def wait_for_arrival_in_airsim_old(env, target_pos, threshold=2.0, timeout=60.0, record_interval=0.5):
@@ -499,7 +585,6 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
 
                     # === 使用命令行传入的参数 ===
                     num_parallel_thoughts = args.num_parallel_thoughts
-                    num_serial_refinements = args.num_refinement_steps
 
                     # --- 1. 生成初始候选 (并行思考) ---
                     logger.info(f"Step: {t}, Stage 1: Generating {num_parallel_thoughts} initial candidates via Dropout...")
@@ -536,60 +621,17 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
 
                     model_wrapper.model.eval()
 
-                    # --- 2. 深化改进候选 (串行思考) ---
-                    final_candidates = []
-                    if initial_candidates:
-                        logger.info(f"Step: {t}, Stage 2: Generating refined candidates with {num_serial_refinements} refinement steps...")
-                        print(f"\n{'*'*20} Step [{t}]: Stage 2 - Serial Refinement {'*'*20}")
-                    
-                        step_refinement_tokens_all_candidates = []
+                    # --- 2. 直接对并行候选择优，不再做串行 refinement ---
+                    logger.info(f"Step: {t}, Stage 2: Scoring and selecting the best parallel candidate...")
+                    print(f"\n{'-'*20} Step [{t}]: Stage 2 - Final Selection {'-'*20}")
 
-                        for initial_wp in initial_candidates:
-                            current_wp = initial_wp
-                            tokens_for_this_candidate = []
-                            
-                            for i in range(num_serial_refinements):
-                                flat_current_wp = np.array(current_wp).flatten()
-                                rethink_inputs, _, _, _ = model_wrapper.prepare_inputs(
-                                    batch_state.episodes, batch_state.target_positions, assist_notices,
-                                    refinement_step=i + 1, intermediate_waypoint=flat_current_wp
-                                )
-                                token_count_rethink = rethink_inputs['input_ids'].shape[1]
-                                tokens_for_this_candidate.append(token_count_rethink)
-                                
-                                refined_wp_batch, _ = model_wrapper.run(
-                                    inputs=rethink_inputs, episodes=batch_state.episodes, rot_to_targets=rot_to_targets
-                                )
-                                
-                                if refined_wp_batch is not None and len(refined_wp_batch) > 0:
-                                    current_wp = refined_wp_batch[0]
-                                    formatted_refined_coords = np.round(current_wp, 2)
-                                    print(f"        -> Refinement Step #{i+1} New Coords: {formatted_refined_coords}")
-                                else:
-                                    print(f"        -> Refinement Step #{i+1} FAILED.")
-                                    break
-                            
-                            step_refinement_tokens_all_candidates.append(tokens_for_this_candidate)
-                            final_candidates.append(current_wp)
-
-                        batch_state.tokens_per_step[0][-1]["refinement_steps"] = step_refinement_tokens_all_candidates
-                    
-                    # --- 3. 择优选取最终答案 ---
-                    logger.info(f"Step: {t}, Stage 3: Scoring and selecting the best candidate...")
-                    print(f"\n{'-'*20} Step [{t}]: Stage 3 - Final Selection {'-'*20}")
-                
                     best_waypoint = None
-                    if final_candidates:
+                    if initial_candidates:
                         best_waypoint = score_and_select_best_waypoint(
-                            candidates=final_candidates,
+                            candidates=initial_candidates,
                             current_episode=batch_state.episodes[0],
                             target_position=batch_state.target_positions[0]
                         )
-                    elif initial_candidates:
-                        logger.warning(f"Step: {t}, Refined candidates list is empty. Falling back to the first initial candidate.")
-                        # 这里原本是调用小模型 run_traj_model，现在我们仍然让 LLM 决定点，交给 SUPER 去飞
-                        # 所以我们只需要这个坐标点
-                        best_waypoint = initial_candidates[0] # 直接使用初始点作为 fallback
                     else:
                         logger.error(f"Step: {t}, All candidate generation failed. Terminating episode.")
                         batch_state.dones[0] = True
@@ -606,7 +648,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                         try:
                             output_record = {
                                 'waypoints_llm_new': initial_candidates,
-                                'refined_waypoints': final_candidates,
+                                'refined_waypoints': [],
                                 'waypoints_world': final_refined_waypoints
                             }
                             output_data = interceptor.record_model_output(output_record)
@@ -626,7 +668,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     if interceptor:
                         interceptor.add_step_data(interceptor.record_model_output({'waypoints_world': final_refined_waypoints}))
                     
-                    if final_refined_waypoints:
+                    if final_refined_waypoints is not None and len(final_refined_waypoints) > 0:
                         formatted_coords = np.round(final_refined_waypoints[0], 2)
                         print(f"\n{'='*20} Step [{t}]: Standard Inference {'='*20}")
                         print(f"    Predicted Coords: {formatted_coords}")
@@ -648,18 +690,9 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     continue
                 
                 # 1. 获取最终决策的子目标点 (Sub-goal)
-                if final_refined_waypoints and len(final_refined_waypoints) > 0:
-                    # final_refined_waypoints 是一个 list，里面可能包含一个 trajectory array
-                    trajectory = final_refined_waypoints[0] 
-                    
-                    # 检查 trajectory 是否是多点轨迹 (例如 shape (N, 3))
-                    if hasattr(trajectory, 'shape') and len(trajectory.shape) > 1:
-                        # ⚠️ 集成SUPER后：取第2个点作为近期子目标（第1个点太近，第2个点合适）
-                        # 原因：TravelUAV生成的是完整轨迹，如果取最后一个点，目标太远太陡，SUPER无法规划
-                        sub_goal = trajectory[min(4, len(trajectory)-1)]  # 取第2个点（或最后一个如果轨迹只有1个点） 
-                    else:
-                        # 如果本身就是单个点
-                        sub_goal = trajectory
+                if final_refined_waypoints is not None and len(final_refined_waypoints) > 0:
+                    # 直接把大模型选出的最优点发给快系统，不再从长轨迹中取中间点
+                    sub_goal = final_refined_waypoints[0]
 
                     # 2. 将子目标点发送给 SUPER (Fast System)
                     print(f"[Bridge] Sending Goal to SUPER: {sub_goal}")
@@ -668,6 +701,12 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     try:
                         # 使用Socket客户端发送目标点
                         super_client = get_super_ros2_client()
+                        goal_offset = compute_super_goal_offset(eval_env.sim_states[batch_idx], super_client)
+                        if goal_offset is not None:
+                            super_client.set_goal_offset(goal_offset)
+                        else:
+                            super_client.clear_goal_offset()
+                            logger.warning("[Bridge] Failed to compute SUPER goal offset, fallback to raw frame conversion")
                         success = super_client.send_goal(sub_goal[0], sub_goal[1], sub_goal[2])
                         
                         if success:

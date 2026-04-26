@@ -19,6 +19,7 @@ sys.path.append(str(Path(str(os.getcwd())).resolve()))
 from airsim_plugin.AirVLNSimulatorClientTool import AirVLNSimulatorClientTool
 from utils.env_utils_uav import SimState
 from utils.env_vector_uav import VectorEnvUtil
+from src.vlnce_src.super_ros2_client import get_super_ros2_client
 RGB_FOLDER = ['frontcamera', 'leftcamera', 'rightcamera', 'rearcamera', 'downcamera']
 DEPTH_FOLDER = [name + '_depth' for name in RGB_FOLDER]
 
@@ -338,6 +339,35 @@ class AirVLNENV:
                     client.takeoffAsync().join()
                     client.moveToZAsync(-2.5, 1.5).join()  # AirSim: z=-2.5米
                     logger.info(f"[Episode Init] 无人机起飞完成")
+
+        # 任务开始时，将快系统 odom 起点重置到当前任务起点（ROS/world）
+        try:
+            super_client = get_super_ros2_client()
+            reset_sim_pos = np.array([
+                start_position_list[0][0],
+                start_position_list[0][1],
+                -2.5,
+            ], dtype=np.float64)
+            reset_ros_pos = np.array(
+                [reset_sim_pos[1], reset_sim_pos[0], -reset_sim_pos[2]],
+                dtype=np.float64,
+            )
+            reset_ok = super_client.reset_initial_pose(
+                x=float(reset_ros_pos[0]),
+                y=float(reset_ros_pos[1]),
+                z=float(reset_ros_pos[2]),
+                yaw=0.0,
+                clear_path=True,
+                timeout=5.0,
+            )
+            if reset_ok:
+                logger.info(
+                    f"[Episode Init] 已重置快系统起点到 ROS/world: {np.round(reset_ros_pos, 3).tolist()}"
+                )
+            else:
+                logger.warning('[Episode Init] 快系统起点重置失败，将继续运行')
+        except Exception as e:
+            logger.warning(f'[Episode Init] 快系统起点重置异常: {e}')
         
         state_info_results = self.simulator_tool.getSensorInfo()
         

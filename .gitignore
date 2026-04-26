@@ -65,3 +65,16 @@ __pycache__/
 *.jpg
 *.jpeg
 .vscode/
+
+# ============================
+# 根目录编译/运行/仿真临时产物（不提交）
+# ============================
+build/
+install/
+log/
+Carla_env/
+carla_0915/
+frame_verifier_output/
+pcd_output*/
+verify_pt_vs_airsim/
+.Trash-1000/
