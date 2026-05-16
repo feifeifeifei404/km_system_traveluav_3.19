@@ -52,12 +52,24 @@ class Assist:
             diffs = []
             close_collision = False
             current_episode = current_observations[i]
+            valid_depth_pairs = 0
             for cid, camera_name in enumerate(DEPTH_FOLDER):
-                diff = np.mean(np.abs(prev_episode[-1]['depth'][cid] - current_episode[-1]['depth'][cid]))
-                zero_cnt  = (current_episode[-1]['depth'][cid] <= 1).sum()
-                if zero_cnt > 0.1 * current_episode[-1]['depth'][cid].size:
+                prev_depth = np.asarray(prev_episode[-1]['depth'][cid])
+                curr_depth = np.asarray(current_episode[-1]['depth'][cid])
+
+                if prev_depth.size == 0 or curr_depth.size == 0:
+                    print(f"[WARNING] skip empty depth map in collision check: env={i} camera={camera_name} prev_shape={prev_depth.shape} curr_shape={curr_depth.shape}")
+                    continue
+                if prev_depth.shape != curr_depth.shape:
+                    print(f"[WARNING] skip mismatched depth map in collision check: env={i} camera={camera_name} prev_shape={prev_depth.shape} curr_shape={curr_depth.shape}")
+                    continue
+
+                diff = np.mean(np.abs(prev_depth - curr_depth))
+                zero_cnt = (curr_depth <= 1).sum()
+                if zero_cnt > 0.1 * curr_depth.size:
                     close_collision = True
                 diffs.append(diff)
+                valid_depth_pairs += 1
             
             # 检查sensors字段是否存在（SUPER集成可能没有这个字段）
             if "sensors" in prev_episode[-1] and "sensors" in current_episode[-1]:
@@ -66,8 +78,15 @@ class Assist:
             else:
                 # 没有sensors字段，使用默认距离
                 distance = 1.0
-            diffs = np.array(diffs)
-            if np.all(diffs < 3):
+
+            if valid_depth_pairs > 0:
+                diffs = np.array(diffs)
+                tiny_diff_collision = bool(np.all(diffs < 3))
+            else:
+                diffs = np.array([])
+                tiny_diff_collision = False
+
+            if tiny_diff_collision:
                 collision_type = 'tiny diff'
             elif close_collision:
                 collision_type = 'close'
@@ -78,7 +97,7 @@ class Assist:
                 print('collision type: ', collision_type)
             # 位移阈值 0.1 在“子目标很近、瞬间到达”时易误判；放宽到 0.5，仅位移 <0.5m 才判为卡住/碰撞
             min_move_threshold = 0.5
-            collisions[i] = np.all(diffs < 3) or close_collision or distance < min_move_threshold
+            collisions[i] = tiny_diff_collision or close_collision or distance < min_move_threshold
             if collisions[i] and not dones[i]:
                 dones[i] = True
         return collisions, dones

@@ -18,6 +18,46 @@ import tqdm
 
 import airsim # 确保导入
 
+
+def _now_perf():
+    return time.perf_counter()
+
+
+def _duration_seconds(start_time):
+    return round(time.perf_counter() - start_time, 6)
+
+
+def _to_builtin_number(value):
+    if isinstance(value, (np.floating, np.integer)):
+        return value.item()
+    return value
+
+
+def _to_builtin_list(values):
+    if values is None:
+        return None
+    if hasattr(values, 'tolist'):
+        values = values.tolist()
+    return [_to_builtin_number(v) for v in values]
+
+
+def _get_step_timing_dir(ori_data_dir):
+    episode_id = os.path.basename(ori_data_dir.rstrip('/'))
+    return os.path.join('/mnt/data/TravelUAV/result/timing', episode_id, 'step_timing')
+
+
+def _get_step_timing_json_path(ori_data_dir, step_index):
+    return os.path.join(_get_step_timing_dir(ori_data_dir), f'step{step_index + 1}.json')
+
+
+def _write_step_timing_json(ori_data_dir, step_index, step_payload):
+    timing_dir = _get_step_timing_dir(ori_data_dir)
+    os.makedirs(timing_dir, exist_ok=True)
+    timing_json_path = _get_step_timing_json_path(ori_data_dir, step_index)
+    with open(timing_json_path, 'w', encoding='utf-8') as f:
+        json.dump(step_payload, f, indent=4, ensure_ascii=False)
+    return timing_json_path
+
 sys.path.append(str(Path(str(os.getcwd())).resolve()))
 
 # === 添加数据拦截器导入 ===
@@ -35,6 +75,7 @@ except ImportError as e:
     print("[WARNING] 将继续运行，但不会记录交互数据")
 
 from utils.logger import logger
+from utils.env_utils_uav import env_timing_log
 from utils.utils import *
 from src.model_wrapper.travel_llm import TravelModelWrapper
 from src.model_wrapper.base_model import BaseModelWrapper
@@ -48,7 +89,13 @@ from src.model_wrapper.utils.travel_util import transform_to_world
 # =========================================================================
 #  [新增模块] SUPER 集成通信模块：仅负责给 SUPER2 发局部目标
 # =========================================================================
-from src.vlnce_src.super_ros2_client import get_super_ros2_client, compute_super_goal_offset
+from src.vlnce_src.super_ros2_client import (
+    get_super_ros2_client,
+    compute_super_goal_offset,
+    raise_if_fast_system_fatal,
+    has_fast_system_fatal_error,
+    get_fast_system_fatal_reason,
+)
 
 # def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0):
 #     """
@@ -94,16 +141,79 @@ def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, rec
     """
     等待 SUPER 执行，但轨迹记录/碰撞判断/到达判断全部基于 AirSim 真值。
 
+    到达判定：
+        3D 距离 dist < threshold（默认 2.0m）
+
     返回：
         success (bool): 是否成功到达
         trajectory (list): 基于 AirSim 真值记录的轨迹
         collision_detected (bool): 是否检测到碰撞/卡住
+        final_stable_state (dict|None): wait 结束后额外稳定采样得到的最终状态
     """
+
+    def _connect_wait_client():
+        super_client = get_super_ros2_client()
+        selected_port = super_client.get_connected_airsim_port()
+        if not selected_port:
+            raise RuntimeError('Bridge has not published connected AirSim port yet')
+
+        logger.info(f'[Wait] Using bridge-selected AirSim port {selected_port} for arrival monitoring')
+        client = airsim.MultirotorClient(port=selected_port)
+        client.confirmConnection()
+        state = client.getMultirotorState()
+        pos = state.kinematics_estimated.position
+        curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
+        dist = np.linalg.norm(curr_pos - np.array(target_pos, dtype=np.float64))
+        logger.info(
+            f'[Wait] Probe bridge-selected port={selected_port} current={np.round(curr_pos, 2)} dist_to_target={dist:.2f}m'
+        )
+        return client, selected_port
+
+    def _build_trajectory_point(state):
+        pos = state.kinematics_estimated.position
+        orient = state.kinematics_estimated.orientation
+        return {
+            'sensors': {
+                'state': {
+                    'position': [pos.x_val, pos.y_val, pos.z_val],
+                    'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
+                    'linear_velocity': [
+                        state.kinematics_estimated.linear_velocity.x_val,
+                        state.kinematics_estimated.linear_velocity.y_val,
+                        state.kinematics_estimated.linear_velocity.z_val,
+                    ],
+                    'angular_velocity': [
+                        state.kinematics_estimated.angular_velocity.x_val,
+                        state.kinematics_estimated.angular_velocity.y_val,
+                        state.kinematics_estimated.angular_velocity.z_val,
+                    ],
+                    'collision': {
+                        'has_collided': bool(state.collision.has_collided),
+                        'object_name': str(state.collision.object_name),
+                    },
+                }
+            }
+        }
+
+    def _sample_final_stable_state(client, selected_port, settle_seconds=1.0, sample_interval=0.1):
+        deadline = time.time() + settle_seconds
+        latest_point = None
+        while time.time() < deadline:
+            state = client.getMultirotorState()
+            latest_point = _build_trajectory_point(state)
+            time.sleep(sample_interval)
+
+        if latest_point is not None:
+            final_pos = latest_point['sensors']['state']['position']
+            logger.info(
+                f"[Wait] Final stabilized state on port {selected_port}: {np.round(final_pos, 2)}"
+            )
+        return latest_point
+
     start_time = time.time()
     logger.info(f"[Wait] Waiting for SUPER to fly to {np.round(target_pos, 2)}...")
 
-    temp_client = airsim.MultirotorClient(port=25001)
-    temp_client.confirmConnection()
+    temp_client, selected_port = _connect_wait_client()
 
     trajectory = []
     last_record_time = 0.0
@@ -112,195 +222,306 @@ def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, rec
     last_check_pos = None
     last_check_time = time.time()
     stuck_timeout = 15.0
+    last_progress_log_time = 0.0
 
     while time.time() - start_time < timeout:
+        raise_if_fast_system_fatal()
         try:
             state = temp_client.getMultirotorState()
             pos = state.kinematics_estimated.position
-            orient = state.kinematics_estimated.orientation
             curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
 
             if time.time() - last_record_time >= record_interval:
-                trajectory.append({
-                    'sensors': {
-                        'state': {
-                            'position': [pos.x_val, pos.y_val, pos.z_val],
-                            'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
-                            'linear_velocity': [
-                                state.kinematics_estimated.linear_velocity.x_val,
-                                state.kinematics_estimated.linear_velocity.y_val,
-                                state.kinematics_estimated.linear_velocity.z_val,
-                            ],
-                            'angular_velocity': [
-                                state.kinematics_estimated.angular_velocity.x_val,
-                                state.kinematics_estimated.angular_velocity.y_val,
-                                state.kinematics_estimated.angular_velocity.z_val,
-                            ],
-                            'collision': {
-                                'has_collided': bool(state.collision.has_collided),
-                                'object_name': str(state.collision.object_name),
-                            },
-                        }
-                    }
-                })
+                trajectory.append(_build_trajectory_point(state))
                 last_record_time = time.time()
 
             if state.collision.has_collided:
                 collision_detected = True
                 logger.warning('[Wait] Collision detected during flight!')
 
+            target_pos_np = np.array(target_pos, dtype=np.float64)
+            diff = curr_pos - target_pos_np
+            xy_dist = float(np.linalg.norm(diff[:2]))
+            z_dist = float(abs(diff[2]))
+            dist = float(np.linalg.norm(diff))
+            if time.time() - last_progress_log_time >= 1.0:
+                logger.info(
+                    f'[Wait] port={selected_port} current={np.round(curr_pos, 2)} '
+                    f'dist={dist:.2f}m xy_dist={xy_dist:.2f}m z_dist={z_dist:.2f}m '
+                    f'collision={bool(state.collision.has_collided)}'
+                )
+                last_progress_log_time = time.time()
+
             if time.time() - last_check_time > stuck_timeout:
                 if last_check_pos is not None:
                     movement = np.linalg.norm(curr_pos - last_check_pos)
                     if movement < 0.5:
-                        logger.error(f'[Wait] CRITICAL: Drone stuck! Moved {movement:.2f}m in {stuck_timeout}s')
-                        return False, trajectory, True
+                        logger.error(
+                            f'[Wait] CRITICAL: Drone stuck on port {selected_port}! '
+                            f'Moved {movement:.2f}m in {stuck_timeout}s, dist={dist:.2f}m'
+                        )
+                        final_stable_state = _sample_final_stable_state(temp_client, selected_port)
+                        return False, trajectory, True, final_stable_state
                 last_check_pos = curr_pos.copy()
                 last_check_time = time.time()
 
-            dist = np.linalg.norm(curr_pos - np.array(target_pos, dtype=np.float64))
             if dist < threshold:
-                logger.info(f'[Wait] Arrived! Final Dist: {dist:.2f}m')
-                trajectory.append({
-                    'sensors': {
-                        'state': {
-                            'position': [pos.x_val, pos.y_val, pos.z_val],
-                            'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
-                            'linear_velocity': [
-                                state.kinematics_estimated.linear_velocity.x_val,
-                                state.kinematics_estimated.linear_velocity.y_val,
-                                state.kinematics_estimated.linear_velocity.z_val,
-                            ],
-                            'angular_velocity': [
-                                state.kinematics_estimated.angular_velocity.x_val,
-                                state.kinematics_estimated.angular_velocity.y_val,
-                                state.kinematics_estimated.angular_velocity.z_val,
-                            ],
-                            'collision': {
-                                'has_collided': bool(state.collision.has_collided),
-                                'object_name': str(state.collision.object_name),
-                            },
-                        }
-                    }
-                })
-                time.sleep(1.0)
-                return True, trajectory, collision_detected
+                logger.info(f'[Wait] Arrived on port {selected_port}! Final Dist: {dist:.2f}m')
+                trajectory.append(_build_trajectory_point(state))
+                final_stable_state = _sample_final_stable_state(temp_client, selected_port)
+                if final_stable_state is not None:
+                    trajectory.append(final_stable_state)
+                return True, trajectory, collision_detected, final_stable_state
 
         except Exception as e:
-            logger.warning(f'[Wait] Temp client failed: {e}')
+            logger.warning(f'[Wait] Temp client failed on port {selected_port}: {e}')
             time.sleep(1.0)
 
         time.sleep(0.2)
 
-    logger.warning('[Wait] Timeout!')
-    return False, trajectory, collision_detected
+    final_stable_state = _sample_final_stable_state(temp_client, selected_port)
+    if final_stable_state is not None:
+        trajectory.append(final_stable_state)
+    logger.warning(f'[Wait] Timeout on port {selected_port}!')
+    return False, trajectory, collision_detected, final_stable_state
 
 
-def wait_for_arrival_in_airsim_old(env, target_pos, threshold=2.0, timeout=60.0, record_interval=0.5):
+def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, record_interval=0.1):
     """
-    旧版本（备份）
+    等待 SUPER 执行，但轨迹记录/碰撞判断/到达判断全部基于 AirSim 真值。
+
+    到达判定：
+        3D 距离 dist < threshold（默认 2.0m）
+
+    返回：
+        success (bool): 是否成功到达
+        trajectory (list): 基于 AirSim 真值记录的轨迹
+        collision_detected (bool): 是否检测到碰撞/卡住
+        final_stable_state (dict|None): wait 结束后额外稳定采样得到的最终状态
     """
+
+    def _connect_wait_client():
+        super_client = get_super_ros2_client()
+        selected_port = super_client.get_connected_airsim_port()
+        if not selected_port:
+            raise RuntimeError('Bridge has not published connected AirSim port yet')
+
+        logger.info(f'[Wait] Using bridge-selected AirSim port {selected_port} for arrival monitoring')
+        client = airsim.MultirotorClient(port=selected_port)
+        client.confirmConnection()
+        state = client.getMultirotorState()
+        pos = state.kinematics_estimated.position
+        curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
+        dist = np.linalg.norm(curr_pos - np.array(target_pos, dtype=np.float64))
+        logger.info(
+            f'[Wait] Probe bridge-selected port={selected_port} current={np.round(curr_pos, 2)} dist_to_target={dist:.2f}m'
+        )
+        return client, selected_port
+
+    def _build_trajectory_point(state):
+        pos = state.kinematics_estimated.position
+        orient = state.kinematics_estimated.orientation
+        return {
+            'sensors': {
+                'state': {
+                    'position': [pos.x_val, pos.y_val, pos.z_val],
+                    'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
+                    'linear_velocity': [
+                        state.kinematics_estimated.linear_velocity.x_val,
+                        state.kinematics_estimated.linear_velocity.y_val,
+                        state.kinematics_estimated.linear_velocity.z_val,
+                    ],
+                    'angular_velocity': [
+                        state.kinematics_estimated.angular_velocity.x_val,
+                        state.kinematics_estimated.angular_velocity.y_val,
+                        state.kinematics_estimated.angular_velocity.z_val,
+                    ],
+                    'collision': {
+                        'has_collided': bool(state.collision.has_collided),
+                        'object_name': str(state.collision.object_name),
+                    },
+                }
+            }
+        }
+
+    def _sample_final_stable_state(client, selected_port, settle_seconds=1.0, sample_interval=0.1):
+        deadline = time.time() + settle_seconds
+        latest_point = None
+        while time.time() < deadline:
+            state = client.getMultirotorState()
+            latest_point = _build_trajectory_point(state)
+            time.sleep(sample_interval)
+
+        if latest_point is not None:
+            final_pos = latest_point['sensors']['state']['position']
+            logger.info(
+                f"[Wait] Final stabilized state on port {selected_port}: {np.round(final_pos, 2)}"
+            )
+        return latest_point
+
     start_time = time.time()
     logger.info(f"[Wait] Waiting for SUPER to fly to {np.round(target_pos, 2)}...")
-    
-    temp_client = airsim.MultirotorClient(port=25001) 
-    temp_client.confirmConnection()
 
-    state = temp_client.getMultirotorState()
-    print(f"DEBUG: Landed State: {state.landed_state}, Collision: {state.collision.has_collided}")
+    temp_client, selected_port = _connect_wait_client()
 
     trajectory = []
-    last_record_time = time.time()
+    last_record_time = 0.0
     collision_detected = False
-    
+
     last_check_pos = None
     last_check_time = time.time()
-    stuck_timeout = 15.0 
-    
+    stuck_timeout = 15.0
+    last_progress_log_time = 0.0
+
     while time.time() - start_time < timeout:
+        raise_if_fast_system_fatal()
         try:
-            # 使用临时 client 获取真实位置
             state = temp_client.getMultirotorState()
             pos = state.kinematics_estimated.position
-            orient = state.kinematics_estimated.orientation
-            curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val])
-            
-            # 记录轨迹点（按时间间隔采样）
-            # 重要：使用与原makeActions相同的数据结构格式
+            curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
+
             if time.time() - last_record_time >= record_interval:
-                trajectory_point = {
-                    'sensors': {
-                        'state': {
-                            'position': [pos.x_val, pos.y_val, pos.z_val],
-                            'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
-                            'linear_velocity': [
-                                state.kinematics_estimated.linear_velocity.x_val,
-                                state.kinematics_estimated.linear_velocity.y_val,
-                                state.kinematics_estimated.linear_velocity.z_val
-                            ],
-                            'angular_velocity': [
-                                state.kinematics_estimated.angular_velocity.x_val,
-                                state.kinematics_estimated.angular_velocity.y_val,
-                                state.kinematics_estimated.angular_velocity.z_val
-                            ]
-                        }
-                    }
-                }
-                trajectory.append(trajectory_point)
+                trajectory.append(_build_trajectory_point(state))
                 last_record_time = time.time()
-            
-            # 检测碰撞
+
             if state.collision.has_collided:
                 collision_detected = True
-                logger.warning(f"[Wait] Collision detected during flight!")
-            
-            # --- 僵死检测 ---
+                logger.warning('[Wait] Collision detected during flight!')
+
+            target_pos_np = np.array(target_pos, dtype=np.float64)
+            diff = curr_pos - target_pos_np
+            xy_dist = float(np.linalg.norm(diff[:2]))
+            z_dist = float(abs(diff[2]))
+            dist = float(np.linalg.norm(diff))
+            if time.time() - last_progress_log_time >= 1.0:
+                logger.info(
+                    f'[Wait] port={selected_port} current={np.round(curr_pos, 2)} '
+                    f'dist={dist:.2f}m xy_dist={xy_dist:.2f}m z_dist={z_dist:.2f}m '
+                    f'collision={bool(state.collision.has_collided)}'
+                )
+                last_progress_log_time = time.time()
+
             if time.time() - last_check_time > stuck_timeout:
                 if last_check_pos is not None:
                     movement = np.linalg.norm(curr_pos - last_check_pos)
-                    if movement < 0.5: 
-                        logger.error(f"[Wait] CRITICAL: Drone stuck! Moved {movement:.2f}m in {stuck_timeout}s")
-                        return False, trajectory, True  # 视为碰撞/卡住 
-                last_check_pos = curr_pos
+                    if movement < 0.5:
+                        logger.error(
+                            f'[Wait] CRITICAL: Drone stuck on port {selected_port}! '
+                            f'Moved {movement:.2f}m in {stuck_timeout}s, dist={dist:.2f}m'
+                        )
+                        final_stable_state = _sample_final_stable_state(temp_client, selected_port)
+                        return False, trajectory, True, final_stable_state
+                last_check_pos = curr_pos.copy()
                 last_check_time = time.time()
 
-            # --- 距离检测 ---
-            dist = np.linalg.norm(curr_pos - np.array(target_pos))
-            # print(f"Dist: {dist:.2f} | Cur: {curr_pos} | Tgt: {target_pos}", end='\r')
-            
             if dist < threshold:
-                logger.info(f"[Wait] Arrived! Final Dist: {dist:.2f}m")
-                # 记录最终状态（使用与原makeActions相同的格式）
-                final_point = {
-                    'sensors': {
-                        'state': {
-                            'position': [pos.x_val, pos.y_val, pos.z_val],
-                            'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
-                            'linear_velocity': [
-                                state.kinematics_estimated.linear_velocity.x_val,
-                                state.kinematics_estimated.linear_velocity.y_val,
-                                state.kinematics_estimated.linear_velocity.z_val
-                            ],
-                            'angular_velocity': [
-                                state.kinematics_estimated.angular_velocity.x_val,
-                                state.kinematics_estimated.angular_velocity.y_val,
-                                state.kinematics_estimated.angular_velocity.z_val
-                            ]
-                        }
-                    }
-                }
-                trajectory.append(final_point)
-                time.sleep(1.0) 
-                return True, trajectory, collision_detected
-                
+                logger.info(f'[Wait] Arrived on port {selected_port}! Final Dist: {dist:.2f}m')
+                trajectory.append(_build_trajectory_point(state))
+                final_stable_state = _sample_final_stable_state(temp_client, selected_port)
+                if final_stable_state is not None:
+                    trajectory.append(final_stable_state)
+                return True, trajectory, collision_detected, final_stable_state
+
         except Exception as e:
-            logger.warning(f"[Wait] Temp client failed: {e}")
+            logger.warning(f'[Wait] Temp client failed on port {selected_port}: {e}')
             time.sleep(1.0)
-            
-        time.sleep(0.2) 
-        
-    logger.warning("[Wait] Timeout!")
-    return False, trajectory, collision_detected
+
+        time.sleep(0.2)
+
+    final_stable_state = _sample_final_stable_state(temp_client, selected_port)
+    if final_stable_state is not None:
+        trajectory.append(final_stable_state)
+    logger.warning(f'[Wait] Timeout on port {selected_port}!')
+    return False, trajectory, collision_detected, final_stable_state
+
+
+def apply_gt_corridor_assist(local_goal, current_pos, gt_trajectory, logger=None):
+    local_goal = np.array(local_goal, dtype=np.float64)
+
+    has_current_pos = current_pos is not None
+    has_gt_trajectory = gt_trajectory is not None and len(gt_trajectory) > 0
+    if logger is not None:
+        logger.info(
+            '[GT Corridor Assist] '
+            f'has_current_pos={has_current_pos} has_gt_trajectory={has_gt_trajectory} '
+            f'gt_len={len(gt_trajectory) if gt_trajectory is not None else 0}'
+        )
+
+    if not has_current_pos:
+        return local_goal
+    current_pos = np.array(current_pos, dtype=np.float64)
+    if not has_gt_trajectory:
+        return local_goal
+
+    gt_points = []
+    for item in gt_trajectory:
+        if isinstance(item, dict):
+            pos = item.get('position')
+            if pos is None and 'sensors' in item and 'state' in item['sensors']:
+                pos = item['sensors']['state'].get('position')
+        else:
+            pos = item
+        if pos is None or len(pos) < 3:
+            continue
+        gt_points.append(np.array(pos[:3], dtype=np.float64))
+
+    if len(gt_points) < 2:
+        return local_goal
+
+    gt_points_np = np.stack(gt_points, axis=0)
+    dists_to_current = np.linalg.norm(gt_points_np - current_pos[None, :], axis=1)
+    nearest_idx = int(np.argmin(dists_to_current))
+
+    forward_ref_idx = nearest_idx
+    accum_dist = 0.0
+    for idx in range(nearest_idx + 1, len(gt_points_np)):
+        accum_dist += float(np.linalg.norm(gt_points_np[idx] - gt_points_np[idx - 1]))
+        forward_ref_idx = idx
+        if accum_dist >= 4.0:
+            break
+
+    gt_ref = gt_points_np[forward_ref_idx]
+    llm_vec_xy = local_goal[:2] - current_pos[:2]
+    gt_vec_xy = gt_ref[:2] - current_pos[:2]
+    llm_norm_xy = float(np.linalg.norm(llm_vec_xy))
+    gt_norm_xy = float(np.linalg.norm(gt_vec_xy))
+    goal_to_ref_xy = float(np.linalg.norm(local_goal[:2] - gt_ref[:2]))
+
+    direction_trigger = False
+    if llm_norm_xy > 1e-6 and gt_norm_xy > 1e-6:
+        cos_sim = float(np.dot(llm_vec_xy, gt_vec_xy) / (llm_norm_xy * gt_norm_xy))
+        cos_sim = float(np.clip(cos_sim, -1.0, 1.0))
+        angle_deg = float(np.degrees(np.arccos(cos_sim)))
+        direction_trigger = angle_deg > 45.0
+    else:
+        angle_deg = 0.0
+
+    distance_trigger = goal_to_ref_xy > 3.0
+    if not (direction_trigger or distance_trigger):
+        return local_goal
+
+    corrected_goal = local_goal.copy()
+    corrected_goal[:2] = 0.8 * local_goal[:2] + 0.2 * gt_ref[:2]
+
+    z_ref_applied = False
+    target_xy_dist = float(np.linalg.norm(local_goal[:2] - gt_points_np[-1][:2]))
+    near_goal_xy = target_xy_dist < 8.0
+    near_traj_end = forward_ref_idx >= len(gt_points_np) - 5
+    z_ref = gt_points_np[-1, 2] if (near_goal_xy or near_traj_end) else gt_ref[2]
+    corrected_goal[2] = 0.8 * local_goal[2] + 0.2 * z_ref
+    z_ref_applied = True
+
+    if logger is not None:
+        logger.info(
+            '[GT Corridor Assist] '
+            f'nearest_idx={nearest_idx} ref_idx={forward_ref_idx} '
+            f'angle_deg={angle_deg:.1f} goal_to_ref_xy={goal_to_ref_xy:.2f} '
+            f'direction_trigger={direction_trigger} distance_trigger={distance_trigger} '
+            f'z_ref_applied={z_ref_applied} '
+            f'goal_before={np.round(local_goal, 2)} goal_after={np.round(corrected_goal, 2)}'
+        )
+
+    return corrected_goal
 
 # =========================================================================
 
@@ -536,6 +757,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
             env_batchs = eval_env.next_minibatch()
             if env_batchs is None:
                 break
+            raise_if_fast_system_fatal()
             
             # === 记录点1: Episode开始 ===
             if interceptor and env_batchs:
@@ -550,9 +772,19 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
             
             batch_state = EvalBatchState(batch_size=eval_env.batch_size, env_batchs=env_batchs, env=eval_env, assist=assist)
             pbar.update(n=eval_env.batch_size)
+            episode_timing_path = None
 
             for t in range(int(args.maxWaypoints) + 1):
+                raise_if_fast_system_fatal()
                 logger.info('Step: {} \t Completed: {} / {}'.format(t, int(eval_env.index_data)-int(eval_env.batch_size), end_iter))
+                step_timing = {
+                    'step_index': t,
+                    'started_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+                    'durations': {},
+                    'values': {},
+                    'status': 'running'
+                }
+                total_step_start = _now_perf()
 
                 is_terminate = batch_state.check_batch_termination(t)
                 if is_terminate:
@@ -581,7 +813,9 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
 
                 if args.use_budget_forcing:
                     # 1. 获取当前状态的助理提示
+                    assist_start = time.perf_counter()
                     assist_notices = batch_state.get_assist_notices()
+                    logger.info(f"[TIMING][Step {t}] batch_state.get_assist_notices: {time.perf_counter() - assist_start:.3f}s")
 
                     # === 使用命令行传入的参数 ===
                     num_parallel_thoughts = args.num_parallel_thoughts
@@ -590,10 +824,12 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     logger.info(f"Step: {t}, Stage 1: Generating {num_parallel_thoughts} initial candidates via Dropout...")
                     print(f"\n{'='*20} Step [{t}]: Stage 1 - Parallel Thinking {'='*20}")
 
+                    prepare_start = time.perf_counter()
                     initial_inputs, rot_to_targets, _, _ = model_wrapper.prepare_inputs(
                         batch_state.episodes, batch_state.target_positions, assist_notices,
                         refinement_step=0, intermediate_waypoint=None
                     )
+                    logger.info(f"[TIMING][Step {t}] model_wrapper.prepare_inputs(initial): {time.perf_counter() - prepare_start:.3f}s")
                     
                     # === 记录点3: 记录模型输入 ===
                     if interceptor:
@@ -609,9 +845,11 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     model_wrapper.model.train()
                     initial_candidates = []
                     for i in range(num_parallel_thoughts):
+                        run_start = time.perf_counter()
                         _, intermediate_outputs = model_wrapper.run(
                             inputs=initial_inputs, episodes=batch_state.episodes, rot_to_targets=rot_to_targets
                         )
+                        logger.info(f"[TIMING][Step {t}] model_wrapper.run(parallel #{i+1}): {time.perf_counter() - run_start:.3f}s")
                         if intermediate_outputs.get("waypoints_llm_new") is not None and len(intermediate_outputs.get("waypoints_llm_new")) > 0:
                             new_candidate = intermediate_outputs.get("waypoints_llm_new")[0]
                             initial_candidates.append(new_candidate)
@@ -658,12 +896,98 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
 
                 else:
                     # 标准推理模式
+                    prepare_start = _now_perf()
                     inputs, rot_to_targets, _, _ = model_wrapper.prepare_inputs(batch_state.episodes, batch_state.target_positions)
+                    step_timing['durations']['prepare_inputs'] = _duration_seconds(prepare_start)
+                    env_timing_log(f"[TIMING][Step {t}] model_wrapper.prepare_inputs(standard): {step_timing['durations']['prepare_inputs']:.3f}s")
+                    
+                    # === 新增：保存慢系统输入的所有非图像内容到文件 ===
+                    try:
+                        episode_id = batch_state.ori_data_dirs[0].split('/')[-1] if batch_state.ori_data_dirs else 'unknown'
+                        debug_log_dir = Path('/mnt/data/TravelUAV/result/input') / episode_id
+                        debug_log_dir.mkdir(parents=True, exist_ok=True)
+                        debug_log_path = debug_log_dir / f'step_{t:04d}_input.txt'
+                        
+                        with open(debug_log_path, 'w', encoding='utf-8') as f:
+                            f.write(f"{'='*80}\n")
+                            f.write(f"[SLOW SYSTEM INPUT DEBUG] Step {t}\n")
+                            f.write(f"{'='*80}\n\n")
+                            
+                            for key, value in inputs.items():
+                                if key in ['images', 'image']:
+                                    f.write(f"  {key}: [SKIPPED - Image Data]\n")
+                                elif isinstance(value, torch.Tensor):
+                                    value_float = value.float().cpu()
+                                    f.write(f"  {key}: shape={value.shape}, dtype={value.dtype}\n")
+                                    if value.numel() < 200:
+                                        f.write(f"    content: {value_float.numpy()}\n")
+                                elif isinstance(value, list):
+                                    if len(value) > 0 and isinstance(value[0], torch.Tensor):
+                                        f.write(f"  {key}: list of {len(value)} tensors\n")
+                                        for i, item in enumerate(value):
+                                            item_float = item.float().cpu()
+                                            f.write(f"    [{i}] shape={item.shape}, dtype={item.dtype}\n")
+                                            if item.numel() < 200:
+                                                f.write(f"        content: {item_float.numpy()}\n")
+                                    else:
+                                        f.write(f"  {key}: {value}\n")
+                                else:
+                                    f.write(f"  {key}: {value}\n")
+                            
+                            if 'prompts' in inputs and inputs['prompts']:
+                                f.write(f"\n[PROMPT TEXT]:\n")
+                                for i, prompt in enumerate(inputs['prompts']):
+                                    f.write(f"  Batch[{i}]:\n")
+                                    f.write(f"    {prompt}\n")
+                            
+                            if 'historys' in inputs and inputs['historys']:
+                                f.write(f"\n[HISTORY WAYPOINTS]:\n")
+                                for i, hist in enumerate(inputs['historys']):
+                                    if isinstance(hist, torch.Tensor):
+                                        hist_np = hist.float().cpu().numpy()
+                                        if len(hist_np) > 0:
+                                            hist_reshaped = hist_np.reshape(-1, 3)
+                                            f.write(f"  Batch[{i}]: {len(hist_reshaped)} waypoints\n")
+                                            f.write(f"    First 3:\n")
+                                            for wp in hist_reshaped[:3]:
+                                                f.write(f"      {wp}\n")
+                                            f.write(f"    Last 3:\n")
+                                            for wp in hist_reshaped[-3:]:
+                                                f.write(f"      {wp}\n")
+                                            f.write(f"    z-range: [{hist_reshaped[:, 2].min():.2f}, {hist_reshaped[:, 2].max():.2f}]\n")
+                            
+                            if 'orientations' in inputs:
+                                f.write(f"\n[ORIENTATION]:\n")
+                                orient = inputs['orientations']
+                                if isinstance(orient, torch.Tensor):
+                                    orient_float = orient.float().cpu().numpy()
+                                    f.write(f"  {orient_float}\n")
+                            
+                            f.write(f"\n[TARGET POSITION]:\n")
+                            f.write(f"  {batch_state.target_positions[0]}\n")
+                            
+                            f.write(f"\n[CURRENT EPISODE INFO]:\n")
+                            if batch_state.episodes and len(batch_state.episodes[0]) > 0:
+                                last_frame = batch_state.episodes[0][-1]
+                                if 'sensors' in last_frame and 'state' in last_frame['sensors']:
+                                    curr_pos = last_frame['sensors']['state']['position']
+                                    f.write(f"  Current Position: {curr_pos}\n")
+                                    dist = np.linalg.norm(np.array(curr_pos) - np.array(batch_state.target_positions[0]))
+                                    f.write(f"  Distance to Target: {dist:.2f}m\n")
+                            
+                            f.write(f"\n{'='*80}\n")
+                        
+                        env_timing_log(f"[DEBUG] Slow system input saved to {debug_log_path}")
+                    except Exception as e:
+                        logger.warning(f"[DEBUG] Failed to save slow system input: {e}")
                     
                     if interceptor:
                         interceptor.add_step_data(interceptor.record_model_input(inputs))
                     
+                    run_start = _now_perf()
                     final_refined_waypoints, _ = model_wrapper.run(inputs=inputs, episodes=batch_state.episodes, rot_to_targets=rot_to_targets)
+                    step_timing['durations']['model_run'] = _duration_seconds(run_start)
+                    env_timing_log(f"[TIMING][Step {t}] model_wrapper.run(standard): {step_timing['durations']['model_run']:.3f}s")
                     
                     if interceptor:
                         interceptor.add_step_data(interceptor.record_model_output({'waypoints_world': final_refined_waypoints}))
@@ -680,21 +1004,61 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                 
                 # 0. 检查episode是否已经结束（与原makeActions保持一致）
                 batch_idx = 0  # 当前只处理第一个batch
+                safety_super_client = get_super_ros2_client()
+                safety_super_client.set_bridge_execution(False)
+                logger.info("[Bridge Execution] disabled at slow-system decision boundary")
                 if eval_env.sim_states[batch_idx].is_end:
                     logger.info(f"[Bridge] Episode already ended, skipping movement")
+                    step_timing['values']['skip_reason'] = 'episode_already_ended'
+                    safety_super_client.set_bridge_execution(False)
+                    eval_env.pause_sim()
+                    logger.info("[AirSim Sync] AirSim paused for already-ended get_obs")
+                    get_obs_start = _now_perf()
                     outputs = eval_env.get_obs()
+                    step_timing['durations']['get_obs'] = _duration_seconds(get_obs_start)
+                    logger.info(f"[TIMING][Step {t}] eval_env.get_obs(already ended): {step_timing['durations']['get_obs']:.3f}s")
                     # 直接跳到后续更新逻辑
-                    batch_state.update_from_env_output(outputs)
-                    batch_state.predict_dones = model_wrapper.predict_done(batch_state.episodes, batch_state.object_infos)
-                    batch_state.update_metric()
-                    continue
                 
                 # 1. 获取最终决策的子目标点 (Sub-goal)
                 if final_refined_waypoints is not None and len(final_refined_waypoints) > 0:
                     # 直接把大模型选出的最优点发给快系统，不再从长轨迹中取中间点
-                    sub_goal = final_refined_waypoints[0]
+                    raw_sub_goal = np.array(final_refined_waypoints[0], dtype=np.float64)
+                    sub_goal = raw_sub_goal.copy()
+                    step_timing['values']['raw_model_goal'] = _to_builtin_list(raw_sub_goal)
+
+                    # GT 轨迹走廊辅助：仅在发送给 SUPER 之前，对明显偏离走廊的局部目标做轻微拉回
+                    current_episode = batch_state.episodes[batch_idx] if batch_state.episodes and len(batch_state.episodes) > batch_idx else None
+                    current_frame = current_episode[-1] if current_episode and len(current_episode) > 0 else None
+                    current_pos = None
+                    if current_frame and 'sensors' in current_frame and 'state' in current_frame['sensors']:
+                        current_pos = current_frame['sensors']['state'].get('position')
+                    gt_trajectory = eval_env.batch[batch_idx].get('trajectory', None)
+                    if current_pos is not None and gt_trajectory is not None:
+                        sub_goal = apply_gt_corridor_assist(
+                            local_goal=sub_goal,
+                            current_pos=current_pos,
+                            gt_trajectory=gt_trajectory,
+                            logger=logger,
+                        )
 
                     # 2. 将子目标点发送给 SUPER (Fast System)
+                    if current_pos is not None:
+                        current_pos_np = np.array(current_pos, dtype=np.float64)
+                        xy_dist = float(np.linalg.norm((sub_goal - current_pos_np)[:2]))
+                        z_delta = float(sub_goal[2] - current_pos_np[2])
+                        step_timing['values']['current_position_before_send'] = _to_builtin_list(current_pos_np)
+                        step_timing['values']['xy_dist'] = round(xy_dist, 6)
+                        step_timing['values']['z_delta'] = round(z_delta, 6)
+                        if abs(z_delta) > 5.0:
+                            original_z = float(sub_goal[2])
+                            sub_goal[2] = float(current_pos_np[2] + np.sign(z_delta) * 5.0)
+                            z_delta = float(sub_goal[2] - current_pos_np[2])
+                            step_timing['values']['z_delta_after_clamp'] = round(z_delta, 6)
+                            logger.info(
+                                f"[Bridge] Clamp sub-goal Z before SUPER: current_z={current_pos_np[2]:.2f} "
+                                f"target_z_before={original_z:.2f} target_z_after={sub_goal[2]:.2f}"
+                            )
+                    step_timing['values']['final_sub_goal'] = _to_builtin_list(sub_goal)
                     print(f"[Bridge] Sending Goal to SUPER: {sub_goal}")
                     # debugpy.breakpoint()  # 断点4: 即将发送的 sub_goal
                     # 确保 sub_goal 是 [x, y, z] 格式
@@ -704,23 +1068,57 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                         goal_offset = compute_super_goal_offset(eval_env.sim_states[batch_idx], super_client)
                         if goal_offset is not None:
                             super_client.set_goal_offset(goal_offset)
+                            step_timing['values']['goal_offset'] = _to_builtin_list(goal_offset)
                         else:
                             super_client.clear_goal_offset()
                             logger.warning("[Bridge] Failed to compute SUPER goal offset, fallback to raw frame conversion")
+                        eval_env.resume_sim()
+                        logger.info("[AirSim Sync] AirSim resumed before enabling Bridge execution")
+                        super_client.set_bridge_execution(True)
+                        logger.info("[Bridge Execution] enabled before sending SUPER goal")
+                        send_goal_start = _now_perf()
                         success = super_client.send_goal(sub_goal[0], sub_goal[1], sub_goal[2])
+                        step_timing['durations']['send_goal'] = _duration_seconds(send_goal_start)
                         
                         if success:
+                            fsm_present_check_start = _now_perf()
+                            fast_system_alive_after_send = super_client.is_fast_system_alive()
+                            step_timing['durations']['fsm_node_present_after_send_goal_check'] = _duration_seconds(fsm_present_check_start)
+                            step_timing['values']['fsm_node_present_after_send_goal'] = bool(fast_system_alive_after_send)
                             # 3. 阻塞等待并获取轨迹
-                            arrival_success, super_trajectory, collision_detected = wait_for_arrival_in_airsim(
+                            wait_start = _now_perf()
+                            arrival_success, super_trajectory, collision_detected, final_stable_state = wait_for_arrival_in_airsim(
                                 eval_env, sub_goal, threshold=2.0, timeout=120.0
                             )
-                            
-                            # 检查SUPER是否成功到达
+                            step_timing['durations']['wait_for_arrival'] = _duration_seconds(wait_start)
+                            env_timing_log(f"[TIMING][Step {t}] wait_for_arrival_in_airsim: {step_timing['durations']['wait_for_arrival']:.3f}s")
+                            super_client.set_bridge_execution(False)
+                            logger.info("[Bridge Execution] disabled after SUPER arrival/failure before AirSim pause")
+                            eval_env.pause_sim()
+                            logger.info("[AirSim Sync] AirSim paused after disabling Bridge execution before get_obs")
+
+                            # 快系统死亡检测：子目标超时但 fsm_node 仍存活 -> 轻微失败；否则致命失败直接退出整个 eval
                             if not arrival_success:
-                                logger.error(f"[SUPER] 未能到达目标点，超时或失败")
-                                # 标记失败但继续（让TravelUAV判断是否结束）
-                                eval_env.sim_states[batch_idx].is_collisioned = True
+                                fast_system_alive = False
+                                try:
+                                    fsm_present_check_start = _now_perf()
+                                    fast_system_alive = super_client.is_fast_system_alive()
+                                    step_timing['durations']['fsm_node_present_after_wait_check'] = _duration_seconds(fsm_present_check_start)
+                                    step_timing['values']['fsm_node_present_after_wait'] = bool(fast_system_alive)
+                                except Exception as alive_error:
+                                    logger.error(f"[SUPER] fast system alive check failed: {alive_error}")
+                                if fast_system_alive:
+                                    logger.error("[SUPER] 子目标超时，但 fsm_node 仍存活；按轻微失败处理，当前 episode 结束")
+                                    eval_env.sim_states[batch_idx].is_end = True
+                                else:
+                                    raise RuntimeError("[FATAL][SUPER] 子目标超时且 fsm_node 已崩溃/失联，退出整个 eval")
                             
+                            step_timing['values']['arrival_success'] = bool(arrival_success)
+                            step_timing['values']['collision_detected'] = bool(collision_detected)
+                            step_timing['values']['super_trajectory_points'] = len(super_trajectory) if super_trajectory else 0
+                            if final_stable_state is not None:
+                                step_timing['values']['final_stable_position'] = _to_builtin_list(final_stable_state['sensors']['state']['position'])
+
                             # 4. 先更新 sim_states（必须在 get_obs 之前！）
                             #    原因：get_obs() 内部通过 multiprocessing 将 sim_states 序列化到子进程，
                             #    子进程会用 state.pose (即 trajectory[-1]) 计算 predict_start_index。
@@ -729,11 +1127,15 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                             
                             # 4.1 更新轨迹信息
                             if super_trajectory and len(super_trajectory) > 0:
+                                if final_stable_state is not None:
+                                    super_trajectory[-1] = final_stable_state
                                 eval_env.sim_states[batch_idx].trajectory.extend(super_trajectory)
                             else:
                                 logger.warning(f"[Bridge] No trajectory returned from SUPER, recording current state only")
                                 current_state = eval_env.sim_states[batch_idx].trajectory[-1] if eval_env.sim_states[batch_idx].trajectory else None
-                                if current_state:
+                                if final_stable_state is not None:
+                                    eval_env.sim_states[batch_idx].trajectory.append(final_stable_state)
+                                elif current_state:
                                     eval_env.sim_states[batch_idx].trajectory.append(current_state)
                             
                             # 4.2 更新步数
@@ -751,7 +1153,10 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                             
                             # 4.5 检查是否到达目标（成功条件）
                             target_position = eval_env.batch[batch_idx]['object_position']
-                            current_position = eval_env.sim_states[batch_idx].pose[0:3]
+                            if final_stable_state is not None:
+                                current_position = final_stable_state['sensors']['state']['position']
+                            else:
+                                current_position = eval_env.sim_states[batch_idx].pose[0:3]
                             dist_to_target = np.linalg.norm(np.array(current_position) - np.array(target_position))
                             
                             if dist_to_target < eval_env.sim_states[batch_idx].SUCCESS_DISTANCE:
@@ -776,33 +1181,95 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                             # 5. 最后才获取观测（此时 sim_states 已更新完毕）
                             #    get_obs 会把更新后的 sim_states 发给子进程，
                             #    子进程基于正确的新位置计算 predict_start_index 和 teacher_action
+                            get_obs_start = _now_perf()
                             outputs = eval_env.get_obs()
+                            step_timing['durations']['get_obs'] = _duration_seconds(get_obs_start)
+                            logger.info(f"[TIMING][Step {t}] eval_env.get_obs(after SUPER): {step_timing['durations']['get_obs']:.3f}s")
                             
                         else:
                             print("[ERROR] Failed to send goal to SUPER. Skipping movement.")
-                            # SUPER发送失败，标记为失败
+                            super_client.set_bridge_execution(False)
+                            logger.info("[Bridge Execution] disabled after SUPER send_goal failure")
+                            eval_env.pause_sim()
+                            logger.info("[AirSim Sync] AirSim paused after SUPER send_goal failure before get_obs")
+                            step_timing['values']['arrival_success'] = False
+                            fast_system_alive = False
+                            try:
+                                fsm_present_check_start = _now_perf()
+                                fast_system_alive = super_client.is_fast_system_alive()
+                                step_timing['durations']['fsm_node_present_after_send_goal_check'] = _duration_seconds(fsm_present_check_start)
+                                step_timing['values']['fsm_node_present_after_send_goal'] = bool(fast_system_alive)
+                            except Exception as alive_error:
+                                logger.error(f"[SUPER] fast system alive check failed after send_goal failure: {alive_error}")
+                            if not fast_system_alive:
+                                raise RuntimeError("[FATAL][SUPER] send_goal 失败且 fsm_node 已崩溃/失联，退出整个 eval")
+                            # SUPER发送失败，但快系统仍活着：仅当前 episode 失败
                             eval_env.sim_states[batch_idx].is_end = True
+                            get_obs_start = _now_perf()
                             outputs = eval_env.get_obs()
+                            step_timing['durations']['get_obs'] = _duration_seconds(get_obs_start)
+                            logger.info(f"[TIMING][Step {t}] eval_env.get_obs(send goal failed): {step_timing['durations']['get_obs']:.3f}s")
                             
                     except Exception as e:
+                        step_timing['values']['exception'] = str(e)
+                        fatal_fast_system_failure = isinstance(e, RuntimeError) and ("[FATAL][SUPER]" in str(e) or "AirSim RPC timeout" in str(e))
+                        if not fatal_fast_system_failure:
+                            try:
+                                if not super_client.is_fast_system_alive():
+                                    fatal_fast_system_failure = True
+                                    e = RuntimeError(f"[FATAL][SUPER] fast system dead during eval exception: {e}")
+                            except Exception as alive_error:
+                                logger.error(f"[SUPER] fast system alive check failed during exception handling: {alive_error}")
+                                fatal_fast_system_failure = True
+                                e = RuntimeError(f"[FATAL][SUPER] fast system alive check failed during exception handling: {alive_error}; original_error={e}")
+                        try:
+                            super_client.set_bridge_execution(False)
+                            logger.info("[Bridge Execution] disabled after SUPER exception")
+                        except Exception as disable_error:
+                            logger.warning(f"[Bridge Execution] failed to disable after SUPER exception: {disable_error}")
+                        eval_env.pause_sim()
+                        logger.info("[AirSim Sync] AirSim paused after SUPER exception before get_obs")
                         print(f"[ERROR] SUPER integration error: {e}")
                         print(f"DEBUG: sub_goal type: {type(sub_goal)}, value: {sub_goal}")
+                        if fatal_fast_system_failure:
+                            raise
                         # SUPER异常，标记为失败
                         eval_env.sim_states[batch_idx].is_end = True
+                        get_obs_start = _now_perf()
                         outputs = eval_env.get_obs()
+                        step_timing['durations']['get_obs'] = _duration_seconds(get_obs_start)
+                        logger.info(f"[TIMING][Step {t}] eval_env.get_obs(SUPER exception): {step_timing['durations']['get_obs']:.3f}s")
                 else:
                     # 如果没有waypoints，只更新观测
                     logger.warning("[Bridge] No final_refined_waypoints, skipping movement")
+                    step_timing['values']['skip_reason'] = 'no_final_refined_waypoints'
+                    safety_super_client.set_bridge_execution(False)
+                    eval_env.pause_sim()
+                    logger.info("[AirSim Sync] AirSim paused for no-waypoint get_obs")
+                    get_obs_start = _now_perf()
                     outputs = eval_env.get_obs()
+                    step_timing['durations']['get_obs'] = _duration_seconds(get_obs_start)
+                    logger.info(f"[TIMING][Step {t}] eval_env.get_obs(no waypoint): {step_timing['durations']['get_obs']:.3f}s")
 
                 # ======================================================================================
                 #  <<< 核心替换区域 END >>>
                 # ======================================================================================
 
                 # 更新状态：观测 + done 预测 + 评估指标
+                update_start = _now_perf()
                 batch_state.update_from_env_output(outputs)
+                step_timing['durations']['update_from_env_output'] = _duration_seconds(update_start)
+                env_timing_log(f"[TIMING][Step {t}] batch_state.update_from_env_output: {step_timing['durations']['update_from_env_output']:.3f}s")
+                predict_done_start = time.perf_counter()
                 batch_state.predict_dones = model_wrapper.predict_done(batch_state.episodes, batch_state.object_infos)
+                env_timing_log(f"[TIMING][Step {t}] model_wrapper.predict_done: {time.perf_counter() - predict_done_start:.3f}s")
+                metric_start = time.perf_counter()
                 batch_state.update_metric()
+                env_timing_log(f"[TIMING][Step {t}] batch_state.update_metric: {time.perf_counter() - metric_start:.3f}s")
+                step_timing['durations']['total_step_time'] = _duration_seconds(total_step_start)
+                step_timing['status'] = 'completed'
+                batch_state.step_timings[batch_idx].append(step_timing)
+                _write_step_timing_json(batch_state.ori_data_dirs[batch_idx], t, step_timing)
                 
                 # === 记录点: 结束步骤 ===
                 if interceptor:
@@ -816,7 +1283,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                 try:
                     final_metrics = batch_state.get_metrics() if hasattr(batch_state, 'get_metrics') else {}
                     episode_result = {
-                        'success': batch_state.dones[0] if hasattr(batch_state, 'dones') and len(batch_state.dones) > 0 else False,
+                        'success': bool(eval_env.sim_states[0].oracle_success) if hasattr(eval_env, 'sim_states') and len(eval_env.sim_states) > 0 else False,
                         'distance_to_goal': batch_state.remain_dists[0] if hasattr(batch_state, 'remain_dists') and len(batch_state.remain_dists) > 0 else None,
                         'metrics': final_metrics
                     }
@@ -867,10 +1334,22 @@ if __name__ == "__main__":
 
     print("Assist setting: always_help --", args.always_help, "    use_gt --", args.use_gt)
     print("***************************************************")
-    eval(model_wrapper=model_wrapper,
-         assist=assist,
-         eval_env=eval_env,
-         eval_save_dir=eval_save_path,
-         interceptor=interceptor)
-
-    eval_env.delete_VectorEnvUtil()
+    try:
+        eval(model_wrapper=model_wrapper,
+             assist=assist,
+             eval_env=eval_env,
+             eval_save_dir=eval_save_path,
+             interceptor=interceptor)
+    finally:
+        try:
+            shutdown_super_client = get_super_ros2_client()
+            shutdown_super_client.set_bridge_execution(False)
+            print("[Bridge Execution] disabled during eval shutdown")
+        except Exception as e:
+            print(f"[WARNING] eval shutdown disable Bridge execution failed: {e}")
+        try:
+            eval_env.pause_sim()
+            print("[AirSim Sync] AirSim paused during eval shutdown")
+        except Exception as e:
+            print(f"[WARNING] eval shutdown pause AirSim failed: {e}")
+        eval_env.delete_VectorEnvUtil()

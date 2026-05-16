@@ -18,6 +18,19 @@ sys.path.insert(0, cur_path+"/..")
 from utils.logger import logger
 
 
+IMAGE_TIMING_LOG_ENABLED = False
+
+
+def image_timing_log(message):
+    if IMAGE_TIMING_LOG_ENABLED:
+        logger.info(message)
+
+
+def image_timing_warn(message):
+    if IMAGE_TIMING_LOG_ENABLED:
+        logger.warning(message)
+
+
 class BaseSensor:
     def __init__(self) -> None:
         pass
@@ -88,9 +101,13 @@ class MyThread(threading.Thread):
         self.func = func
         self.args = args
         self.flag_ok = False
+        self.started_at = None
+        self.finished_at = None
 
     def run(self):
+        self.started_at = time.perf_counter()
         self.result = self.func(*self.args)
+        self.finished_at = time.perf_counter()
         self.flag_ok = True
 
     def get_result(self):
@@ -102,6 +119,35 @@ class MyThread(threading.Thread):
 
 
 class AirVLNSimulatorClientTool:
+    @staticmethod
+    def _join_threads_with_monitor(threads, label, warn_interval=10.0):
+        join_start = time.perf_counter()
+        last_warn = join_start
+        while True:
+            alive = []
+            for index_1, row in enumerate(threads):
+                for index_2, thread in enumerate(row):
+                    if thread.is_alive():
+                        elapsed = time.perf_counter() - (thread.started_at or join_start)
+                        stage = getattr(thread, 'debug_stage', 'unknown')
+                        detail = getattr(thread, 'debug_detail', '')
+                        alive.append((index_1, index_2, elapsed, stage, detail))
+            if not alive:
+                break
+            now = time.perf_counter()
+            if now - last_warn >= warn_interval:
+                alive_msg = ', '.join([
+                    f"machine={i} scene={j} alive_for={elapsed:.1f}s stage={stage} detail={detail}"
+                    for i, j, elapsed, stage, detail in alive
+                ])
+                image_timing_warn(f"[TIMING][{label}] waiting for image threads: {alive_msg}")
+                last_warn = now
+            time.sleep(0.5)
+        for row in threads:
+            for thread in row:
+                thread.join(timeout=0)
+        return time.perf_counter() - join_start
+
     def __init__(self, machines_info) -> None:
         self.machines_info = copy.deepcopy(machines_info)
         self.socket_clients = []
@@ -212,6 +258,14 @@ class AirVLNSimulatorClientTool:
                     self.airsim_clients[index][i] = None
                 else:
                     self.airsim_clients[index][i] = airsim.MultirotorClient(ip=ip, port=port, timeout_value=airsim_timeout)
+                    setattr(self.airsim_clients[index][i], '_traveluav_debug_ip', ip)
+                    setattr(self.airsim_clients[index][i], '_traveluav_debug_port', port)
+                    setattr(self.airsim_clients[index][i], '_traveluav_debug_timeout', airsim_timeout)
+                    setattr(self.airsim_clients[index][i], '_traveluav_debug_scene', self.machines_info[index]['open_scenes'][i])
+                    logger.info(
+                        f"[AirSimClient] created machine={index} scene={i} map={self.machines_info[index]['open_scenes'][i]} "
+                        f"ip={ip} port={port} timeout={airsim_timeout}s"
+                    )
                     print(port)
 
             logger.info(f'打开场景完毕，机器{index}: {socket_client.address._host}:{socket_client.address._port}')
@@ -493,52 +547,117 @@ class AirVLNSimulatorClientTool:
         return True
     
     def getImageResponses(self, cameras=['FrontCamera', 'LeftCamera', 'RightCamera', 'RearCamera', 'DownCamera'], poses=None):
-        def _getImages(airsim_client: airsim.VehicleClient):
+        def _getImages(airsim_client: airsim.VehicleClient, machine_idx=None, scene_idx=None):
             if airsim_client is None:
                 raise Exception('client is None.')
                 return None, None
             time_sleep_cnt = 0
+            total_start = time.perf_counter()
             while True:
                 try:
-                    ImageRequest = []
-                    for camera_name in cameras:
-                        ImageRequest.append(airsim.ImageRequest(camera_name, airsim.ImageType.Scene, pixels_as_float=False, compress=False))
-                        ImageRequest.append(airsim.ImageRequest(camera_name, airsim.ImageType.DepthPerspective, pixels_as_float=True, compress=False))
-                    image_datas = airsim_client.simGetImages(requests=ImageRequest)
                     images, depth_images = [], []
-                    for idx, camera_name in enumerate(cameras):
-                        rgb_resp = image_datas[2 * idx]
+                    split_rpc_total_start = time.perf_counter()
+                    for camera_name in cameras:
+                        camera_total_start = time.perf_counter()
+
+                        rgb_request = airsim.ImageRequest(
+                            camera_name,
+                            airsim.ImageType.Scene,
+                            pixels_as_float=False,
+                            compress=False,
+                        )
+                        depth_request = airsim.ImageRequest(
+                            camera_name,
+                            airsim.ImageType.DepthPlanar,
+                            pixels_as_float=True,
+                            compress=False,
+                        )
+
+                        rgb_rpc_start = time.perf_counter()
+                        image_timing_log(
+                            f"[TIMING][getImageResponses] single simGetImages START camera={camera_name} "
+                            f"type=Scene machine={machine_idx} scene={scene_idx}"
+                        )
+                        rgb_resp = airsim_client.simGetImages(requests=[rgb_request])[0]
+                        image_timing_log(
+                            f"[TIMING][getImageResponses] single simGetImages DONE camera={camera_name} "
+                            f"type=Scene machine={machine_idx} scene={scene_idx}: "
+                            f"{time.perf_counter() - rgb_rpc_start:.3f}s "
+                            f"width={rgb_resp.width} height={rgb_resp.height}"
+                        )
+
+                        depth_rpc_start = time.perf_counter()
+                        image_timing_log(
+                            f"[TIMING][getImageResponses] single simGetImages START camera={camera_name} "
+                            f"type=DepthPlanar machine={machine_idx} scene={scene_idx}"
+                        )
+                        depth_resp = airsim_client.simGetImages(requests=[depth_request])[0]
+                        image_timing_log(
+                            f"[TIMING][getImageResponses] single simGetImages DONE camera={camera_name} "
+                            f"type=DepthPlanar machine={machine_idx} scene={scene_idx}: "
+                            f"{time.perf_counter() - depth_rpc_start:.3f}s "
+                            f"width={depth_resp.width} height={depth_resp.height} "
+                            f"float_len={len(depth_resp.image_data_float)}"
+                        )
+
+                        camera_decode_start = time.perf_counter()
                         image = np.frombuffer(rgb_resp.image_data_uint8, dtype=np.uint8).reshape(rgb_resp.height, rgb_resp.width, 3)
-                        depth_resp = image_datas[2* idx + 1]
-                        depth_img_in_meters = airsim.list_to_2d_float_array(depth_resp.image_data_float, depth_resp.width, depth_resp.height)
+                        depth_img_in_meters = airsim.list_to_2d_float_array(
+                            depth_resp.image_data_float,
+                            depth_resp.width,
+                            depth_resp.height,
+                        )
                         depth_image = (np.clip(depth_img_in_meters, 0, 100) / 100 * 255).astype(np.uint8)
                         images.append(image)
                         depth_images.append(depth_image)
+                        image_timing_log(
+                            f"[TIMING][getImageResponses] decode camera={camera_name} machine={machine_idx} "
+                            f"scene={scene_idx}: {time.perf_counter() - camera_decode_start:.3f}s "
+                            f"rgb_shape={image.shape} depth_shape={depth_image.shape} "
+                            f"camera_total={time.perf_counter() - camera_total_start:.3f}s"
+                        )
+
+                    image_timing_log(
+                        f"[TIMING][getImageResponses] split rpc all machine={machine_idx} scene={scene_idx}: "
+                        f"{time.perf_counter() - split_rpc_total_start:.3f}s cameras={cameras}"
+                    )
                     break
                 except Exception as e:
                     time_sleep_cnt += 1
+                    logger.error(
+                        f"[TIMING][getImageResponses] simGetImages ERROR machine={machine_idx} scene={scene_idx} "
+                        f"elapsed={time.perf_counter() - rpc_start if 'rpc_start' in locals() else -1:.3f}s error={e}"
+                    )
                     logger.error("图片获取错误: " + str(e))
                     logger.error('time_sleep_cnt: {}'.format(time_sleep_cnt))
                     time.sleep(1)
                 if time_sleep_cnt > 10:
                     raise Exception('图片获取失败')
+            image_timing_log(
+                f"[TIMING][getImageResponses] _getImages total machine={machine_idx} scene={scene_idx}: "
+                f"{time.perf_counter() - total_start:.3f}s retries={time_sleep_cnt}"
+            )
             return images, depth_images
 
+        total_start = time.perf_counter()
         threads = []
         thread_results = []
         for index_1 in range(len(self.airsim_clients)):
             threads.append([])
             for index_2 in range(len(self.airsim_clients[index_1])):
                 threads[index_1].append(
-                    MyThread(_getImages, (self.airsim_clients[index_1][index_2], ))
+                    MyThread(_getImages, (self.airsim_clients[index_1][index_2], index_1, index_2))
                 )
+        launch_start = time.perf_counter()
         for index_1, _ in enumerate(threads):
             for index_2, _ in enumerate(threads[index_1]):
                 threads[index_1][index_2].setDaemon(True)
                 threads[index_1][index_2].start()
-        for index_1, _ in enumerate(threads):
-            for index_2, _ in enumerate(threads[index_1]):
-                threads[index_1][index_2].join()
+        image_timing_log(f"[TIMING][getImageResponses] launch threads: {time.perf_counter() - launch_start:.3f}s")
+        join_start = time.perf_counter()
+        join_elapsed = self._join_threads_with_monitor(threads, 'getImageResponses')
+        image_timing_log(f"[TIMING][getImageResponses] join threads: {join_elapsed:.3f}s")
+        collect_start = time.perf_counter()
         responses = []
         for index_1, _ in enumerate(threads):
             responses.append([])
@@ -548,60 +667,198 @@ class AirVLNSimulatorClientTool:
                 )
                 thread_results.append(threads[index_1][index_2].flag_ok)
         threads = []
+        image_timing_log(f"[TIMING][getImageResponses] collect results: {time.perf_counter() - collect_start:.3f}s")
         if not (np.array(thread_results) == True).all():
             logger.error('getImageResponses失败')
             return None
 
+        image_timing_log(f"[TIMING][getImageResponses] total: {time.perf_counter() - total_start:.3f}s")
         return responses
     
     
     def getImageResponsesForRecord(self, cameras=['FrontCameraRecord', 'DownCameraRecord'], poses=None):
-        def _getImages(airsim_client: airsim.VehicleClient):
+        def _log_response(response, camera_name, image_type, machine_idx, scene_idx):
+            if not IMAGE_TIMING_LOG_ENABLED:
+                return
+            uint8_len = len(getattr(response, 'image_data_uint8', []) or [])
+            float_len = len(getattr(response, 'image_data_float', []) or [])
+            logger.info(
+                f"[DIAG][getImageResponsesForRecord] response camera={camera_name} type={image_type} "
+                f"machine={machine_idx} scene={scene_idx} width={getattr(response, 'width', None)} "
+                f"height={getattr(response, 'height', None)} uint8_len={uint8_len} float_len={float_len} "
+                f"pixels_as_float={getattr(response, 'pixels_as_float', None)} compress={getattr(response, 'compress', None)}"
+            )
+
+        def _get_single_response(airsim_client, request, camera_name, image_type, machine_idx, scene_idx, current_thread):
+            setattr(current_thread, 'debug_stage', 'record_single_rpc')
+            setattr(current_thread, 'debug_detail', f"camera={camera_name} type={image_type}")
+            rpc_start = time.perf_counter()
+            image_timing_log(
+                f"[TIMING][getImageResponsesForRecord] single simGetImages START camera={camera_name} "
+                f"type={image_type} machine={machine_idx} scene={scene_idx}"
+            )
+            responses = airsim_client.simGetImages(requests=[request])
+            rpc_elapsed = time.perf_counter() - rpc_start
+            image_timing_log(
+                f"[TIMING][getImageResponsesForRecord] single simGetImages DONE camera={camera_name} "
+                f"type={image_type} machine={machine_idx} scene={scene_idx}: {rpc_elapsed:.3f}s "
+                f"response_count={len(responses) if responses is not None else 'None'}"
+            )
+            if responses is None or len(responses) != 1:
+                raise Exception(
+                    f"single simGetImages returned invalid response_count={len(responses) if responses is not None else 'None'} "
+                    f"camera={camera_name} type={image_type}"
+                )
+            response = responses[0]
+            _log_response(response, camera_name, image_type, machine_idx, scene_idx)
+            return response
+
+        def _getImages(airsim_client: airsim.VehicleClient, machine_idx=None, scene_idx=None):
             if airsim_client is None:
                 raise Exception('client is None.')
                 return None, None
             time_sleep_cnt = 0
+            total_start = time.perf_counter()
             while True:
                 try:
-                    ImageRequest = []
+                    client_ip = getattr(airsim_client, '_traveluav_debug_ip', 'unknown')
+                    client_port = getattr(airsim_client, '_traveluav_debug_port', getattr(airsim_client, 'port', getattr(airsim_client, '_port', 'unknown')))
+                    client_timeout = getattr(airsim_client, '_traveluav_debug_timeout', getattr(airsim_client, 'timeout_value', 'unknown'))
+                    client_scene = getattr(airsim_client, '_traveluav_debug_scene', 'unknown')
+                    current_thread = threading.current_thread()
+                    image_timing_log(
+                        f"[DIAG][getImageResponsesForRecord] begin split-request mode machine={machine_idx} scene={scene_idx} "
+                        f"map={client_scene} ip={client_ip} port={client_port} timeout={client_timeout}s cameras={cameras}"
+                    )
+
+                    setattr(current_thread, 'debug_stage', 'record_camera_info')
+                    setattr(current_thread, 'debug_detail', ','.join(cameras))
+                    camera_info_total_start = time.perf_counter()
                     for camera_name in cameras:
-                        ImageRequest.append(airsim.ImageRequest(camera_name, airsim.ImageType.Scene, pixels_as_float=False, compress=False))
-                        ImageRequest.append(airsim.ImageRequest(camera_name, airsim.ImageType.DepthPerspective, pixels_as_float=True, compress=False))
-                    image_datas = airsim_client.simGetImages(requests=ImageRequest)
+                        camera_info_start = time.perf_counter()
+                        try:
+                            camera_info = airsim_client.simGetCameraInfo(camera_name)
+                            pose = getattr(camera_info, 'pose', None)
+                            fov = getattr(camera_info, 'fov', None)
+                            image_timing_log(
+                                f"[DIAG][getImageResponsesForRecord] simGetCameraInfo OK camera={camera_name} "
+                                f"machine={machine_idx} scene={scene_idx}: {time.perf_counter() - camera_info_start:.3f}s "
+                                f"fov={fov} pose={pose}"
+                            )
+                        except Exception as camera_info_error:
+                            logger.error(
+                                f"[DIAG][getImageResponsesForRecord] simGetCameraInfo FAILED camera={camera_name} "
+                                f"machine={machine_idx} scene={scene_idx}: {time.perf_counter() - camera_info_start:.3f}s "
+                                f"error={camera_info_error}"
+                            )
+                    image_timing_log(
+                        f"[TIMING][getImageResponsesForRecord] camera info all machine={machine_idx} scene={scene_idx}: "
+                        f"{time.perf_counter() - camera_info_total_start:.3f}s"
+                    )
+
                     images, depth_images = [], []
-                    for idx, camera_name in enumerate(cameras):
-                        rgb_resp = image_datas[2 * idx]
+                    split_rpc_total_start = time.perf_counter()
+                    for camera_name in cameras:
+                        camera_total_start = time.perf_counter()
+                        rgb_request = airsim.ImageRequest(camera_name, airsim.ImageType.Scene, pixels_as_float=False, compress=False)
+                        depth_request = airsim.ImageRequest(camera_name, airsim.ImageType.DepthPerspective, pixels_as_float=True, compress=False)
+
+                        rgb_resp = _get_single_response(
+                            airsim_client, rgb_request, camera_name, 'Scene', machine_idx, scene_idx, current_thread
+                        )
+                        depth_resp = _get_single_response(
+                            airsim_client, depth_request, camera_name, 'DepthPerspective', machine_idx, scene_idx, current_thread
+                        )
+
+                        setattr(current_thread, 'debug_stage', 'record_decode')
+                        setattr(current_thread, 'debug_detail', f"camera={camera_name}")
+                        camera_decode_start = time.perf_counter()
+                        rgb_uint8_len = len(getattr(rgb_resp, 'image_data_uint8', []) or [])
+                        depth_float_len = len(getattr(depth_resp, 'image_data_float', []) or [])
+                        expected_rgb_len = getattr(rgb_resp, 'height', 0) * getattr(rgb_resp, 'width', 0) * 3
+                        expected_depth_len = getattr(depth_resp, 'height', 0) * getattr(depth_resp, 'width', 0)
+                        if rgb_uint8_len != expected_rgb_len:
+                            logger.error(
+                                f"[DIAG][getImageResponsesForRecord] RGB data length mismatch camera={camera_name} "
+                                f"machine={machine_idx} scene={scene_idx}: got={rgb_uint8_len} expected={expected_rgb_len} "
+                                f"shape=({getattr(rgb_resp, 'height', None)}, {getattr(rgb_resp, 'width', None)}, 3)"
+                            )
+                        if depth_float_len != expected_depth_len:
+                            logger.error(
+                                f"[DIAG][getImageResponsesForRecord] depth data length mismatch camera={camera_name} "
+                                f"machine={machine_idx} scene={scene_idx}: got={depth_float_len} expected={expected_depth_len} "
+                                f"shape=({getattr(depth_resp, 'height', None)}, {getattr(depth_resp, 'width', None)})"
+                            )
+
+                        rgb_decode_start = time.perf_counter()
                         image = np.frombuffer(rgb_resp.image_data_uint8, dtype=np.uint8).reshape(rgb_resp.height, rgb_resp.width, 3)
-                        depth_resp = image_datas[2* idx + 1]
+                        image_timing_log(
+                            f"[TIMING][getImageResponsesForRecord] decode rgb camera={camera_name} machine={machine_idx} "
+                            f"scene={scene_idx}: {time.perf_counter() - rgb_decode_start:.3f}s"
+                        )
+                        depth_decode_start = time.perf_counter()
                         depth_img_in_meters = airsim.list_to_2d_float_array(depth_resp.image_data_float, depth_resp.width, depth_resp.height)
                         depth_image = (np.clip(depth_img_in_meters, 0, 100) / 100 * 255).astype(np.uint8)
+                        image_timing_log(
+                            f"[TIMING][getImageResponsesForRecord] decode depth camera={camera_name} machine={machine_idx} "
+                            f"scene={scene_idx}: {time.perf_counter() - depth_decode_start:.3f}s"
+                        )
                         images.append(image)
                         depth_images.append(depth_image)
+                        image_timing_log(
+                            f"[TIMING][getImageResponsesForRecord] camera total camera={camera_name} machine={machine_idx} "
+                            f"scene={scene_idx}: {time.perf_counter() - camera_total_start:.3f}s "
+                            f"decode={time.perf_counter() - camera_decode_start:.3f}s rgb_shape={image.shape} depth_shape={depth_image.shape}"
+                        )
+                        logger.info(
+                            f"[RECORD_RESOLUTION] camera={camera_name} rgb={rgb_resp.width}x{rgb_resp.height} "
+                            f"depth={depth_resp.width}x{depth_resp.height}"
+                        )
+
+                    image_timing_log(
+                        f"[TIMING][getImageResponsesForRecord] split rpc all machine={machine_idx} scene={scene_idx}: "
+                        f"{time.perf_counter() - split_rpc_total_start:.3f}s cameras={cameras}"
+                    )
+                    setattr(current_thread, 'debug_stage', 'record_done')
+                    setattr(current_thread, 'debug_detail', f"images={len(images)} depths={len(depth_images)}")
                     break
                 except Exception as e:
+                    setattr(threading.current_thread(), 'debug_stage', 'record_error_retry')
+                    setattr(threading.current_thread(), 'debug_detail', str(e))
                     time_sleep_cnt += 1
+                    logger.error(
+                        f"[TIMING][getImageResponsesForRecord] split request ERROR machine={machine_idx} scene={scene_idx} "
+                        f"elapsed={time.perf_counter() - total_start:.3f}s error={e}"
+                    )
                     logger.error("图片获取错误: " + str(e))
                     logger.error('time_sleep_cnt: {}'.format(time_sleep_cnt))
                     time.sleep(1)
                 if time_sleep_cnt > 10:
                     raise Exception('图片获取失败')
+            image_timing_log(
+                f"[TIMING][getImageResponsesForRecord] _getImages total machine={machine_idx} scene={scene_idx}: "
+                f"{time.perf_counter() - total_start:.3f}s retries={time_sleep_cnt} mode=split"
+            )
             return images, depth_images
 
+        total_start = time.perf_counter()
         threads = []
         thread_results = []
         for index_1 in range(len(self.airsim_clients)):
             threads.append([])
             for index_2 in range(len(self.airsim_clients[index_1])):
                 threads[index_1].append(
-                    MyThread(_getImages, (self.airsim_clients[index_1][index_2], ))
+                    MyThread(_getImages, (self.airsim_clients[index_1][index_2], index_1, index_2))
                 )
+        launch_start = time.perf_counter()
         for index_1, _ in enumerate(threads):
             for index_2, _ in enumerate(threads[index_1]):
                 threads[index_1][index_2].setDaemon(True)
                 threads[index_1][index_2].start()
-        for index_1, _ in enumerate(threads):
-            for index_2, _ in enumerate(threads[index_1]):
-                threads[index_1][index_2].join()
+        image_timing_log(f"[TIMING][getImageResponsesForRecord] launch threads: {time.perf_counter() - launch_start:.3f}s")
+        join_elapsed = self._join_threads_with_monitor(threads, 'getImageResponsesForRecord')
+        image_timing_log(f"[TIMING][getImageResponsesForRecord] join threads: {join_elapsed:.3f}s")
+        collect_start = time.perf_counter()
         responses = []
         for index_1, _ in enumerate(threads):
             responses.append([])
@@ -611,10 +868,12 @@ class AirVLNSimulatorClientTool:
                 )
                 thread_results.append(threads[index_1][index_2].flag_ok)
         threads = []
+        image_timing_log(f"[TIMING][getImageResponsesForRecord] collect results: {time.perf_counter() - collect_start:.3f}s")
         if not (np.array(thread_results) == True).all():
-            logger.error('getImageResponses失败')
+            logger.error('getImageResponsesForRecord失败')
             return None
 
+        image_timing_log(f"[TIMING][getImageResponsesForRecord] total: {time.perf_counter() - total_start:.3f}s mode=split")
         return responses
 
     def getSensorInfo(self, ):

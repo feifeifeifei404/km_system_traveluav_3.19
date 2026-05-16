@@ -1,4 +1,5 @@
 import math
+import time
 import numba as nb
 import airsim
 import numpy as np
@@ -7,6 +8,14 @@ import copy
 from src.common.param import args
 
 from utils.logger import logger
+
+
+ENV_TIMING_LOG_ENABLED = False
+
+
+def env_timing_log(message):
+    if ENV_TIMING_LOG_ENABLED:
+        logger.info(message)
 
 
 class SimState:
@@ -67,16 +76,27 @@ class ENV:
         self.batch = None
 
     def set_batch(self, batch):
+        set_batch_start = time.perf_counter()
         self.batch = copy.deepcopy(batch)
+        env_timing_log(f"[TIMING][ENV.set_batch] deepcopy batch: {time.perf_counter() - set_batch_start:.3f}s")
         return
 
     def get_obs_at(self, index: int, state: SimState):
+        get_obs_start = time.perf_counter()
+        assert_start = time.perf_counter()
         assert self.batch is not None, 'batch is None'
         item = self.batch[index]
         oracle_success = state.oracle_success
+        env_timing_log(
+            f"[TIMING][ENV.get_obs_at] init index={index}: {time.perf_counter() - assert_start:.3f}s "
+            f"trajectory_len={len(state.trajectory)} step={state.step}"
+        )
 
+        branch_start = time.perf_counter()
         if args.run_type in ['collect', 'train'] and args.collect_type in ['dagger', 'SF']:
+            waypoint_start = time.perf_counter()
             teacher_action_path = get_waypoint_at(STEP_NUM = 7,DISTANCE=1, state=state)
+            env_timing_log(f"[TIMING][ENV.get_obs_at] get_waypoint_at index={index}: {time.perf_counter() - waypoint_start:.3f}s")
             done = state.is_end
         elif args.run_type in ['eval'] and args.collect_type in ['dagger', 'SF']:
             teacher_action_path = None
@@ -84,6 +104,8 @@ class ENV:
         else:
             logger.error('wrong type')
             raise NotImplementedError
+        env_timing_log(f"[TIMING][ENV.get_obs_at] branch index={index}: {time.perf_counter() - branch_start:.3f}s")
+        logger.info(f"[TIMING][ENV.get_obs_at] total index={index}: {time.perf_counter() - get_obs_start:.3f}s")
 
         return (teacher_action_path, done, oracle_success), state
 

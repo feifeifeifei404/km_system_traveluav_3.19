@@ -20,6 +20,7 @@ from nav_msgs.msg import Odometry
 from perfect_drone_sim.srv import SetInitialPose
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, UInt16
 
 
 class SUPERRos2Client(Node):
@@ -29,6 +30,7 @@ class SUPERRos2Client(Node):
         super().__init__('super_ros2_client')
 
         self.goal_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
+        self.bridge_execution_pub = self.create_publisher(Bool, '/bridge/execution_enabled', 10)
         self.set_initial_pose_client = self.create_client(
             SetInitialPose,
             '/perfect_drone/set_initial_pose',
@@ -46,16 +48,29 @@ class SUPERRos2Client(Node):
             qos_profile,
         )
 
+        self.port_sub = self.create_subscription(
+            UInt16,
+            '/bridge/connected_airsim_port',
+            self.connected_port_callback,
+            10,
+        )
+
         self.current_pos = None
         self.current_orientation = None
         self.current_linear_velocity = None
         self.current_angular_velocity = None
+        self.last_odom_wall_time = None
         self.target_pos = None
+        self.connected_airsim_port = None
         self.lock = threading.Lock()
 
         self.get_logger().info(
             '[SUPER ROS2] 客户端启动（订阅 /lidar_slam/odom，不使用 AirSim 真值，不使用 goal_offset）'
         )
+
+    def connected_port_callback(self, msg):
+        with self.lock:
+            self.connected_airsim_port = int(msg.data)
 
     def odom_callback(self, msg):
         """这里收到的是快系统自身 /lidar_slam/odom。"""
@@ -84,6 +99,7 @@ class SUPERRos2Client(Node):
                 msg.twist.twist.angular.y,
                 msg.twist.twist.angular.z,
             ]
+            self.last_odom_wall_time = time.time()
 
     def wait_for_first_odom(self, timeout=5.0):
         """等待快系统首帧 /lidar_slam/odom，避免 current=None 时就发目标。"""
@@ -142,6 +158,15 @@ class SUPERRos2Client(Node):
     def clear_goal_offset(self):
         pass
 
+    def set_bridge_execution(self, enabled):
+        msg = Bool()
+        msg.data = bool(enabled)
+        for _ in range(3):
+            self.bridge_execution_pub.publish(msg)
+            time.sleep(0.02)
+        self.get_logger().info(f'[SUPER] set_bridge_execution({bool(enabled)}) 已发布到 /bridge/execution_enabled')
+        return True
+
     def send_goal(self, x, y, z):
         """
         参数:
@@ -195,17 +220,46 @@ class SUPERRos2Client(Node):
         with self.lock:
             return self.current_pos.copy() if self.current_pos is not None else None
 
+    def get_connected_airsim_port(self):
+        with self.lock:
+            return int(self.connected_airsim_port) if self.connected_airsim_port else None
+
+    def is_fast_system_alive(self, odom_timeout=3.0):
+        if not rclpy.ok():
+            return False
+        with self.lock:
+            last_odom_wall_time = self.last_odom_wall_time
+        if last_odom_wall_time is None:
+            return False
+        return (time.time() - last_odom_wall_time) <= odom_timeout
+
+    def is_fsm_node_present(self):
+        try:
+            node_names = {name for name, _namespace in self.get_node_names_and_namespaces()}
+        except Exception as e:
+            self.get_logger().error(f'[SUPER] 查询 ROS 节点失败: {e}')
+            return False
+        return 'fsm_node' in node_names
+
 
 _ros2_client = None
 _ros2_thread = None
 _rclpy_initialized = False
+_fast_system_fatal_flag = False
+_fast_system_fatal_reason = None
+_fast_system_monitor_thread = None
+_fast_system_monitor_started = False
 
 
 def init_ros2_client():
-    global _ros2_client, _ros2_thread, _rclpy_initialized
+    global _ros2_client, _ros2_thread, _rclpy_initialized, _fast_system_fatal_flag, _fast_system_fatal_reason, _fast_system_monitor_thread, _fast_system_monitor_started
 
     if _ros2_client is not None:
         return _ros2_client
+
+    _fast_system_fatal_flag = False
+    _fast_system_fatal_reason = None
+    _fast_system_monitor_started = False
 
     if not _rclpy_initialized:
         rclpy.init()
@@ -218,6 +272,43 @@ def init_ros2_client():
         daemon=True,
     )
     _ros2_thread.start()
+
+    def _monitor_fsm_node_exit():
+        global _fast_system_fatal_flag, _fast_system_fatal_reason, _fast_system_monitor_started
+        seen_fsm_node = False
+        _fast_system_monitor_started = True
+        if _ros2_client is not None:
+            _ros2_client.get_logger().info('[SUPER] fsm_node monitor thread started')
+        monitor_start_time = time.time()
+        initial_presence_grace_seconds = 10.0
+        while _ros2_client is not None and rclpy.ok():
+            try:
+                is_present = _ros2_client.is_fsm_node_present()
+                if is_present:
+                    seen_fsm_node = True
+                elif seen_fsm_node:
+                    _fast_system_fatal_flag = True
+                    _fast_system_fatal_reason = 'fsm_node process died'
+                    _ros2_client.get_logger().error('[FATAL][SUPER] 检测到 fsm_node 已退出')
+                    return
+                elif time.time() - monitor_start_time > initial_presence_grace_seconds:
+                    _fast_system_fatal_flag = True
+                    _fast_system_fatal_reason = 'fsm_node never appeared in ROS graph'
+                    _ros2_client.get_logger().error('[FATAL][SUPER] 启动后在 ROS graph 中始终未发现 fsm_node')
+                    return
+            except Exception as e:
+                _fast_system_fatal_flag = True
+                _fast_system_fatal_reason = f'fsm_node monitor failed: {e}'
+                if _ros2_client is not None:
+                    _ros2_client.get_logger().error(f'[FATAL][SUPER] fsm_node 监听失败: {e}')
+                return
+            time.sleep(0.2)
+
+    _fast_system_monitor_thread = threading.Thread(
+        target=_monitor_fsm_node_exit,
+        daemon=True,
+    )
+    _fast_system_monitor_thread.start()
 
     if not _ros2_client.wait_for_first_odom(timeout=5.0):
         _ros2_client.get_logger().warn('[SUPER] 启动后尚未拿到快系统 odom，后续 send_goal 会继续检查')
@@ -232,13 +323,30 @@ def get_super_ros2_client():
     return _ros2_client
 
 
+def has_fast_system_fatal_error():
+    return bool(_fast_system_fatal_flag)
+
+
+def is_fast_system_monitor_started():
+    return bool(_fast_system_monitor_started)
+
+
+def get_fast_system_fatal_reason():
+    return _fast_system_fatal_reason
+
+
+def raise_if_fast_system_fatal():
+    if _fast_system_fatal_flag:
+        raise RuntimeError(f'[FATAL][SUPER] {_fast_system_fatal_reason or "fast system fatal error"}')
+
+
 def compute_super_goal_offset(sim_state, super_client):
     """当前模式下不再使用 offset，保留函数仅兼容旧调用。"""
     return None
 
 
 def close_ros2_client():
-    global _ros2_client, _rclpy_initialized
+    global _ros2_client, _rclpy_initialized, _fast_system_fatal_flag, _fast_system_fatal_reason, _fast_system_monitor_started
 
     if _ros2_client is not None:
         _ros2_client.destroy_node()
@@ -247,3 +355,7 @@ def close_ros2_client():
     if _rclpy_initialized:
         rclpy.shutdown()
         _rclpy_initialized = False
+
+    _fast_system_fatal_flag = False
+    _fast_system_fatal_reason = None
+    _fast_system_monitor_started = False

@@ -78,15 +78,19 @@ def save_to_dataset_eval(episodes, path, ori_traj_dir, final_metrics=None):
     target_obj = os.path.join(root_path, 'object_description.json')
     shutil.copy2(ori_obj, target_obj)
 
+     # === 修改/新增代码开始 ===
+    # 将原始信息和新的评估指标合并
     result_data = {'ori_traj_dir': ori_traj_dir}
     if final_metrics is not None:
         result_data.update(final_metrics)
 
+    # 保存到 evaluation_results.json 而不是 ori_info.json，名字更清晰
     with open(os.path.join(path, 'evaluation_results.json'), 'w') as f:
         json.dump(result_data, f, indent=4)
+    # === 修改/新增代码结束 ===
 
-    with open(os.path.join(path, 'ori_info.json'), 'w') as f:
-        json.dump({'ori_traj_dir': ori_traj_dir}, f, indent=4)
+    # with open(os.path.join(path, 'ori_info.json'), 'w') as f:
+    #     json.dump({'ori_traj_dir': ori_traj_dir}, f)
 
 def save_logs(episodes, trajectory_dir):
     save_logs_start = time.perf_counter()
@@ -134,29 +138,16 @@ def load_object_description():
 
 
 def target_distance_increasing_for_10frames(lst):
-    """保持原版逻辑：最近 10 帧距离目标单调不下降，视为连续远离。"""
-    if len(lst) < 10:
-        return False
-    sublist = lst[-10:]
-    for i in range(1, len(sublist)):
-        if sublist[i] < sublist[i - 1]:
-            return False
-    return True
-
-
-def target_position_stuck_for_10frames(position_lst, distance_lst, movement_threshold=0.5, distance_improve_threshold=0.5):
-    """新增诊断逻辑：最近 10 帧几乎没移动，且没有明显接近目标，视为卡死。"""
-    if len(position_lst) < 10 or len(distance_lst) < 10:
+    if len(lst) < 30:
         return False
 
-    recent_positions = np.array(position_lst[-10:])
-    recent_distances = distance_lst[-10:]
+    sublist = lst[-30:]
 
-    step_movements = np.linalg.norm(np.diff(recent_positions, axis=0), axis=1)
-    total_movement = float(np.sum(step_movements))
-    distance_improvement = recent_distances[0] - recent_distances[-1]
+    # 20帧内整体远离超过0.5米才算卡死
+    if sublist[-1] - sublist[0] > 0.5:
+        return True
 
-    return total_movement < movement_threshold and distance_improvement < distance_improve_threshold
+    return False
 
 class BatchIterator:
     def __init__(self, env: AirVLNENV):
@@ -271,26 +262,17 @@ class EvalBatchState:
         self.trajs = [b['trajectory'] for b in env_batchs]
         self.ori_data_dirs = [b['trajectory_dir'] for b in env_batchs]
         self.dones = [False] * batch_size
-
-        # 保留最终输出信息，但不让它改变原版 success / done 的状态流。
-        self.termination_reasons = ["进行中 (In Progress)"] * self.batch_size
-        self.failure_reasons = [None] * self.batch_size
-        self.failure_signals_seen = [set() for _ in range(batch_size)]
-        self.eval_start_time = time.perf_counter()
-
+        self.termination_reasons = ["进行中 (In Progress)"] * self.batch_size # <--- 新增
         self.predict_dones = [False] * batch_size
-        self.tokens_per_step = [[] for _ in range(batch_size)]  # 记录每一步思考的 token 数
-        self.total_steps = [0] * batch_size                     # 记录总步数
-        self.final_metrics = [{} for _ in range(batch_size)]    # 存储最终要保存的所有指标
-        self.step_timings = [[] for _ in range(batch_size)]
+        self.tokens_per_step = [[] for _ in range(batch_size)] # 记录每一步思考的token数
+        self.total_steps = [0] * batch_size                    # 记录总步数
+        self.final_metrics = [{} for _ in range(batch_size)]   # 存储最终要保存的所有指标
         self.collisions = [False] * batch_size
         self.success = [False] * batch_size
         self.oracle_success = [False] * batch_size
-        self.oracle_hit = [False] * batch_size
         self.early_end = [False] * batch_size
         self.skips = [False] * batch_size
         self.distance_to_ends = [[] for _ in range(batch_size)]
-        self.position_history = [[] for _ in range(batch_size)]
         self.envs_to_pause = []
         
         self._initialize_batch_data()
@@ -311,27 +293,62 @@ class EvalBatchState:
             if i in self.envs_to_pause:
                 continue
             self.episodes[i].append(observations[i][-1])
-            current_position = observations[i][-1]['sensors']['state']['position']
-            self.position_history[i].append(current_position)
             self.distance_to_ends[i].append(self._calculate_distance(observations[i][-1], self.target_positions[i]))
-            if self.oracle_success[i]:
-                self.oracle_hit[i] = True
 
     def _calculate_distance(self, observation, target_position):
         return np.linalg.norm(np.array(observation['sensors']['state']['position']) - np.array(target_position))
 
-    def _mark_failure_reason(self, i, reason):
-        """只记录失败原因；不改变原版 success / done / oracle_success / early_end 的语义。"""
-        self.failure_signals_seen[i].add(reason)
-        if self.failure_reasons[i] is None:
-            self.failure_reasons[i] = reason
-            self.termination_reasons[i] = f"失败：{reason}"
+    def _apply_termination_priority(self, i, dones_from_env, dones_before_depth_check, t=None):
+        if self.predict_dones[i] and self.distance_to_ends[i] and self.distance_to_ends[i][-1] <= 20:
+            self.success[i] = True
+            self.oracle_success[i] = False
+            self.dones[i] = True
+            self.termination_reasons[i] = "成功：模型主动结束且距离目标<=20m"
+            return True
+
+        if self.oracle_success[i]:
+            self.success[i] = False
+            self.dones[i] = True
+            self.termination_reasons[i] = "成功：Oracle 判定成功"
+            return True
+
+        if (not dones_before_depth_check[i]) and self.dones[i]:
+            self.success[i] = False
+            self.oracle_success[i] = False
+            self.termination_reasons[i] = "失败：深度图检测到碰撞"
+            return True
+
+        if target_distance_increasing_for_10frames(self.distance_to_ends[i]):
+            self.collisions[i] = True
+            self.success[i] = False
+            self.oracle_success[i] = False
+            self.dones[i] = True
+            self.termination_reasons[i] = "失败：连续远离目标 (卡死)"
+            return True
+
+        if t is not None and t == args.maxWaypoints:
+            self.success[i] = False
+            self.oracle_success[i] = False
+            self.dones[i] = True
+            self.termination_reasons[i] = "失败：超时"
+            return True
+
+        if dones_from_env[i] and self.dones[i]:
+            self.success[i] = False
+            self.oracle_success[i] = False
+            if self.collisions[i]:
+                self.termination_reasons[i] = "失败：环境碰撞"
+            else:
+                self.termination_reasons[i] = "结束：由模拟环境直接终止"
+            return True
+
+        return False
 
     def update_from_env_output(self, outputs):
         observations, self.dones, self.collisions, self.oracle_success = [list(x) for x in zip(*outputs)]
         
-        collisions_from_env = list(self.collisions)
-        dones_before_depth_check = list(self.dones)
+        dones_from_env = list(self.dones)
+        dones_before_depth_check = list(self.dones) # 记录检查前的状态
         
         depth_check_start = time.perf_counter()
         self.collisions, self.dones = self.assist.check_collision_by_depth(self.episodes, observations, self.collisions, self.dones)
@@ -340,124 +357,69 @@ class EvalBatchState:
         for i in range(self.batch_size):
             if i in self.envs_to_pause:
                 continue
-
             for j in range(len(observations[i])):
                 self.episodes[i].append(observations[i][j])
-
-            current_position = observations[i][-1]['sensors']['state']['position']
-            self.position_history[i].append(current_position)
             self.distance_to_ends[i].append(self._calculate_distance(observations[i][-1], self.target_positions[i]))
-            if self.oracle_success[i]:
-                self.oracle_hit[i] = True
 
-            # 碰撞原因只来自环境碰撞或深度图碰撞。
-            depth_collision_done = (not dones_before_depth_check[i]) and self.dones[i]
-            if collisions_from_env[i] or self.collisions[i] or depth_collision_done:
-                self._mark_failure_reason(i, "碰撞")
-
-            # 保持原版逻辑：连续远离会把 episode 置为 done；这里额外把原因记录为“远离”。
-            # 卡死是新增诊断逻辑：位置几乎不动且没有明显接近目标。
-            if not self.dones[i]:
-                if target_position_stuck_for_10frames(self.position_history[i], self.distance_to_ends[i]):
-                    self.dones[i] = True
-                    self._mark_failure_reason(i, "卡死")
-                elif target_distance_increasing_for_10frames(self.distance_to_ends[i]):
-                    self.collisions[i] = True
-                    self.dones[i] = True
-                    self._mark_failure_reason(i, "远离")
+            if self._apply_termination_priority(i, dones_from_env, dones_before_depth_check):
+                print(f"环境 {i} 结束，原因: {self.termination_reasons[i]}")
 
     def get_assist_notices(self):
         return self.assist.get_assist_notice(self.episodes, self.trajs, self.object_infos, self.target_positions)
 
     def update_metric(self):
-        # 恢复原版 early_end 逻辑：模型 stop 但距离 > 20m 时，只标记 early_end，不直接失败。
         for i in range(self.batch_size):
             if self.dones[i]:
                 continue
-            if self.predict_dones[i] and not self.skips[i]:
-                if self.distance_to_ends[i][-1] <= 20 and not self.early_end[i]:
-                    self.success[i] = True
-                    self.termination_reasons[i] = "成功：模型主动结束且距离目标<=20m"
-                elif self.distance_to_ends[i][-1] > 20:
-                    self.early_end[i] = True
-                if self.oracle_success[i] and self.early_end[i]:
-                    self.dones[i] = True
-                    self.termination_reasons[i] = "成功：Oracle 判定成功"
-                elif self.success[i]:
-                    self.dones[i] = True
-
-    def _finalize_termination_reason(self, i):
-        if self.success[i]:
-            self.failure_reasons[i] = None
-            self.termination_reasons[i] = "成功：模型主动结束且距离目标<=20m"
-        elif self.oracle_hit[i]:
-            self.failure_reasons[i] = None
-            self.termination_reasons[i] = "成功：Oracle 判定成功"
-        else:
-            # 失败原因限定在：碰撞 / 卡死 / 远离 / 超时。
-            if self.failure_reasons[i] is None:
-                if self.collisions[i]:
-                    self.failure_reasons[i] = "碰撞"
-                else:
-                    self.failure_reasons[i] = "超时"
-            self.termination_reasons[i] = f"失败：{self.failure_reasons[i]}"
+            if self.predict_dones[i] and self.distance_to_ends[i] and self.distance_to_ends[i][-1] > 20:
+                self.early_end[i] = True
 
     def check_batch_termination(self, t):
         for i in range(self.batch_size):
-            # 恢复原版：超时仍然在 batch termination 阶段作为最后兜底。
-            if t == args.maxWaypoints:
-                self.dones[i] = True
-                if not self.success[i] and not self.oracle_hit[i] and self.failure_reasons[i] is None:
-                    self._mark_failure_reason(i, "超时")
-
+            if not self.dones[i]:
+                if self._apply_termination_priority(i, self.dones, self.dones, t=t):
+                    print("输出结束原因：")
+                    print(self.termination_reasons[i])
             if self.dones[i] and not self.skips[i]:
                 self.envs_to_pause.append(i)
-                self._finalize_termination_reason(i)
 
+                # === 新增代码开始 ===
                 # 任务结束，开始整合最终指标
-                self.total_steps[i] = t + 1  # 步数是从 0 开始的，所以加 1
+                self.total_steps[i] = t + 1  # 步数是从0开始的，所以加1
                 
-                # 计算总 token 数
+                # 计算总token数
                 total_tokens = 0
                 for step_tokens in self.tokens_per_step[i]:
                     total_tokens += step_tokens.get("initial_candidates", 0)
+                    # total_tokens += sum(step_tokens.get("refinement_steps", []))
                     ref_steps = step_tokens.get("refinement_steps", [])
                     flat_steps = []
                     for item in ref_steps:
                         if isinstance(item, list):
-                            flat_steps.extend(item)
+                            flat_steps.extend(item)  # Add elements from the sub-list
                         else:
-                            flat_steps.append(item)
+                            flat_steps.append(item)   # Add the number directly
                     total_tokens += sum(flat_steps)
                       
-                is_success = bool(self.success[i] or self.oracle_hit[i])
-                elapsed_time_seconds = time.perf_counter() - self.eval_start_time
-                failure_signals_before_success = []
-                if self.oracle_hit[i] and not self.success[i]:
-                    failure_signals_before_success = sorted(self.failure_signals_seen[i])
+                
                 self.final_metrics[i] = {
                     "total_steps": self.total_steps[i],
                     "termination_reason": self.termination_reasons[i],
-                    "failure_reason": None if is_success else self.failure_reasons[i],
-                    "failure_signals_before_success": failure_signals_before_success,
-                    "elapsed_time_seconds": elapsed_time_seconds,
-                    "is_success": is_success,
-                    "success_type": "success" if self.success[i] else ("oracle" if self.oracle_hit[i] else "failure"),
+                    "is_success": bool(self.success[i] or self.oracle_success[i]),
+                    "success_type": "success" if self.success[i] else ("oracle" if self.oracle_success[i] else "failure"),
                     "total_tokens": total_tokens,
                     "tokens_per_step": self.tokens_per_step[i]
                 }
+                # === 新增代码结束 ===
 
                 prex = ''
                 if self.success[i]:
                     prex = 'success_'
                     print(i, " has succeed!")
-                elif self.oracle_hit[i]:
+                elif self.oracle_success[i]:
                     prex = "oracle_"
                     print(i, " has oracle succeed!")
-                else:
-                    print(f"{i} failed, reason: {self.failure_reasons[i]}")
-
-                new_traj_name = prex + self.ori_data_dirs[i].split('/')[-1]
+                new_traj_name = prex +  self.ori_data_dirs[i].split('/')[-1]
                 new_traj_dir = os.path.join(args.eval_save_path, new_traj_name)
                 save_to_dataset_eval(self.episodes[i], new_traj_dir, self.ori_data_dirs[i], self.final_metrics[i])
                 self.skips[i] = True

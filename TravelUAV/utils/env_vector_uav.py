@@ -1,4 +1,5 @@
 import signal
+import time
 from multiprocessing.connection import Connection
 from multiprocessing.context import BaseContext
 from threading import Thread
@@ -20,6 +21,14 @@ from src.common.param import args
 from utils.pickle5_multiprocessing import ConnectionWrapper
 from utils.env_utils_uav import ENV
 from utils.logger import logger
+
+
+ENV_TIMING_LOG_ENABLED = False
+
+
+def env_timing_log(message):
+    if ENV_TIMING_LOG_ENABLED:
+        logger.info(message)
 
 
 COMMAND_CLOSE = "close"
@@ -164,9 +173,19 @@ class VectorEnvUtil:
 
                 elif command == COMMAND_GET_OBS:
                     index, state = data
+                    worker_obs_start = time.perf_counter()
                     (teacher_action, done, oracle_success), state = env.get_obs_at(index, state)
+                    env_timing_log(
+                        f"[TIMING][VectorEnvUtil.worker] env.get_obs_at index={index}: "
+                        f"{time.perf_counter() - worker_obs_start:.3f}s"
+                    )
+                    worker_send_start = time.perf_counter()
                     connection_write_fn(
                         ((teacher_action, done, oracle_success), state)
+                    )
+                    env_timing_log(
+                        f"[TIMING][VectorEnvUtil.worker] send result index={index}: "
+                        f"{time.perf_counter() - worker_send_start:.3f}s"
                     )
 
                 elif command == COMMAND_GET_COLLISION_SENSOR:
@@ -257,36 +276,73 @@ class VectorEnvUtil:
 
 
     def set_batch(self, batch):
+        set_batch_start = time.perf_counter()
+        copy_start = time.perf_counter()
         self.batch = copy.deepcopy(batch)
+        env_timing_log(f"[TIMING][VectorEnvUtil.set_batch] deepcopy local batch: {time.perf_counter() - copy_start:.3f}s")
 
+        send_start = time.perf_counter()
         for index in range(self._num_envs):
-            self._connection_write_fns[index](
-                (COMMAND_SET_BATCH, copy.deepcopy(batch))
+            worker_copy_start = time.perf_counter()
+            batch_for_worker = copy.deepcopy(batch)
+            env_timing_log(
+                f"[TIMING][VectorEnvUtil.set_batch] deepcopy batch for worker index={index}: "
+                f"{time.perf_counter() - worker_copy_start:.3f}s"
             )
+            write_start = time.perf_counter()
+            self._connection_write_fns[index](
+                (COMMAND_SET_BATCH, batch_for_worker)
+            )
+            env_timing_log(
+                f"[TIMING][VectorEnvUtil.set_batch] send batch to worker index={index}: "
+                f"{time.perf_counter() - write_start:.3f}s"
+            )
+        env_timing_log(f"[TIMING][VectorEnvUtil.set_batch] send all workers: {time.perf_counter() - send_start:.3f}s")
 
+        recv_start = time.perf_counter()
         results = [
             self._connection_read_fns[index]() for index in range(self._num_envs)
         ]
+        env_timing_log(f"[TIMING][VectorEnvUtil.set_batch] recv all workers: {time.perf_counter() - recv_start:.3f}s")
+        env_timing_log(f"[TIMING][VectorEnvUtil.set_batch] total: {time.perf_counter() - set_batch_start:.3f}s")
 
         return
 
 
     def get_obs(self, obs_states) -> Tuple[List[Any], List[Any]]:
+        get_obs_start = time.perf_counter()
         self.obs_states = obs_states
 
+        send_all_start = time.perf_counter()
         for index in range(len(obs_states)):
             _, _, state, _, _ = obs_states[index]
+            send_start = time.perf_counter()
             self._connection_write_fns[index](
                 (COMMAND_GET_OBS, (index, state))
             )
+            env_timing_log(
+                f"[TIMING][VectorEnvUtil.get_obs] send COMMAND_GET_OBS index={index}: "
+                f"{time.perf_counter() - send_start:.3f}s"
+            )
+        env_timing_log(f"[TIMING][VectorEnvUtil.get_obs] send all: {time.perf_counter() - send_all_start:.3f}s")
 
-        results = [
-            self._connection_read_fns[index]() for index in range(len(obs_states))
-        ]
+        recv_all_start = time.perf_counter()
+        results = []
+        for index in range(len(obs_states)):
+            recv_start = time.perf_counter()
+            result = self._connection_read_fns[index]()
+            env_timing_log(
+                f"[TIMING][VectorEnvUtil.get_obs] recv COMMAND_GET_OBS index={index}: "
+                f"{time.perf_counter() - recv_start:.3f}s"
+            )
+            results.append(result)
+        env_timing_log(f"[TIMING][VectorEnvUtil.get_obs] recv all: {time.perf_counter() - recv_all_start:.3f}s")
 
+        format_all_start = time.perf_counter()
         obs = []
         sim_states = []
         for index in range(len(obs_states)):
+            format_start = time.perf_counter()
             (teacher_action, done, oracle_success), sim_state = results[index]
             self.obs_states[index] = (obs_states[index][0], obs_states[index][1], sim_state, obs_states[index][3], obs_states[index][4])
 
@@ -294,12 +350,25 @@ class VectorEnvUtil:
                 self._format_obs_at(index, teacher_action, done, oracle_success)
             )
             sim_states.append(sim_state)
+            env_timing_log(
+                f"[TIMING][VectorEnvUtil.get_obs] format obs index={index}: "
+                f"{time.perf_counter() - format_start:.3f}s"
+            )
+        env_timing_log(f"[TIMING][VectorEnvUtil.get_obs] format all: {time.perf_counter() - format_all_start:.3f}s")
+        env_timing_log(f"[TIMING][VectorEnvUtil.get_obs] total: {time.perf_counter() - get_obs_start:.3f}s")
 
         return obs, sim_states
 
     def _format_obs_at(self, index: int, teacher_waypoints, done, oracle_success):
+        format_start = time.perf_counter()
         rgb_images, depth_images, sim_state, rgb_records, depth_records = self.obs_states[index]
+        slice_start = time.perf_counter()
         observations = [info for info in sim_state.trajectory[-5:]]
+        env_timing_log(
+            f"[TIMING][VectorEnvUtil._format_obs_at] slice trajectory index={index}: "
+            f"{time.perf_counter() - slice_start:.3f}s trajectory_len={len(sim_state.trajectory)}"
+        )
+        assign_start = time.perf_counter()
         observations[-1]['instruction'] = sim_state.raw_trajectory_info['instruction']
         observations[-1]['trajectory_dir'] = sim_state.raw_trajectory_info['trajectory_dir']
         observations[-1]['teacher_action'] = teacher_waypoints
@@ -308,6 +377,11 @@ class VectorEnvUtil:
         observations[-1]['rgb_record'] = rgb_records
         observations[-1]['depth_record'] = depth_records
         collision = sim_state.is_collisioned
+        env_timing_log(
+            f"[TIMING][VectorEnvUtil._format_obs_at] assign fields index={index}: "
+            f"{time.perf_counter() - assign_start:.3f}s"
+        )
+        env_timing_log(f"[TIMING][VectorEnvUtil._format_obs_at] total index={index}: {time.perf_counter() - format_start:.3f}s")
 
         return observations, done, collision, oracle_success
 

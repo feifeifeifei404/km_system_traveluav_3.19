@@ -378,7 +378,7 @@ def prepare_data_to_inputs(
 
     # 构造对话 prompt（带 <image> token）
     #结合实际情况，尤其注意前方建筑物，不要总是向下飞，可以优先考虑往上飞。
-    new_hint = "Based on actual conditions, pay particular attention to structures ahead. Avoid constantly flying downward; prioritize ascending flight paths instead.\n"
+    new_hint = "Based on actual conditions, pay particular attention to structures ahead.\n"
     conversation_for_human = (
         "<image>\n" + new_hint + sources[-1]["instruction"]
     )  # 从最后一帧中取出人类输入的指令，前面加上 <image> 表明是多模态输入
@@ -423,6 +423,12 @@ def prepare_data_to_inputs(
     history_waypoint = np.array(
         [(rot.T @ delta) for delta in deltas]
     )  # delta 从世界坐标系 → UAV 自身坐标系
+
+
+
+
+
+
     rotation_to_target = None
 
     target_point = np.array(
@@ -432,6 +438,15 @@ def prepare_data_to_inputs(
     x, y = target_point[0], target_point[1]
     rotation_to_target = rotation_matrix_from_vector(x, y)
     history_waypoint = transform_point(history_waypoint, rotation_to_target)
+
+
+
+
+
+
+
+
+
 
     # 计算当前位置与方向 delta
     if (

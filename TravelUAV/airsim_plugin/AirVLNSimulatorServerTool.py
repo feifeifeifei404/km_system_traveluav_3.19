@@ -56,7 +56,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
               "AutoExposureMinBrightness": 0.03
             },
             {
-              "ImageType": 2,
+              "ImageType": 1,
               "Width": 256,
               "Height": 256,
               "FOV_Degrees": 90,
@@ -82,7 +82,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
               "AutoExposureMinBrightness": 0.03
             },
             {
-              "ImageType": 2,
+              "ImageType": 1,
               "Width": 256,
               "Height": 256,
               "FOV_Degrees": 90,
@@ -108,7 +108,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
               "AutoExposureMinBrightness": 0.03
             },
             {
-              "ImageType": 2,
+              "ImageType": 1,
               "Width": 256,
               "Height": 256,
               "FOV_Degrees": 90,
@@ -134,7 +134,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
               "AutoExposureMinBrightness": 0.03
             },
             {
-              "ImageType": 2,
+              "ImageType": 1,
               "Width": 256,
               "Height": 256,
               "FOV_Degrees": 90,
@@ -160,7 +160,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
               "AutoExposureMinBrightness": 0.03
             },
             {
-              "ImageType": 2,
+              "ImageType": 1,
               "Width": 256,
               "Height": 256,
               "FOV_Degrees": 90,
@@ -186,9 +186,17 @@ AIRSIM_SETTINGS_TEMPLATE = {
               "AutoExposureMinBrightness": 0.03
             },
             {
-              "ImageType": 2,
+              "ImageType": 1,
               "Width": 1024,
               "Height": 1024,
+              "FOV_Degrees": 90,
+              "AutoExposureMaxBrightness": 1,
+              "AutoExposureMinBrightness": 0.03
+            },
+            {
+              "ImageType": 2,
+              "Width": 320,
+              "Height": 320,
               "FOV_Degrees": 90,
               "AutoExposureMaxBrightness": 1,
               "AutoExposureMinBrightness": 0.03
@@ -212,9 +220,17 @@ AIRSIM_SETTINGS_TEMPLATE = {
               "AutoExposureMinBrightness": 0.03
             },
             {
-              "ImageType": 2,
+              "ImageType": 1,
               "Width": 1024,
               "Height": 1024,
+              "FOV_Degrees": 90,
+              "AutoExposureMaxBrightness": 1,
+              "AutoExposureMinBrightness": 0.03
+            },
+            {
+              "ImageType": 2,
+              "Width": 320,
+              "Height": 320,
               "FOV_Degrees": 90,
               "AutoExposureMaxBrightness": 1,
               "AutoExposureMinBrightness": 0.03

@@ -15,6 +15,14 @@ from typing import Dict, List, Optional
 import tqdm
 from src.common.param import args
 from utils.logger import logger
+
+
+ENV_TIMING_LOG_ENABLED = False
+
+
+def env_timing_log(message):
+    if ENV_TIMING_LOG_ENABLED:
+        logger.info(message)
 sys.path.append(str(Path(str(os.getcwd())).resolve()))
 from airsim_plugin.AirVLNSimulatorClientTool import AirVLNSimulatorClientTool
 from utils.env_utils_uav import SimState
@@ -231,12 +239,24 @@ class AirVLNENV:
         self._setTrajectorys()
         
         self._setObjects()
+        self._stabilize_after_objects()
 
         self.update_measurements()
 
     def _setObjects(self, ):
         objects_info = [item['object'] for item in self.batch]
         return self.simulator_tool.setObjects(objects_info)
+
+    def _stabilize_after_objects(self, settle_time=0.1):
+        stabilize_start = time.perf_counter()
+        logger.info("[Episode Init] Objects set, resume AirSim briefly to settle spawned objects/render state")
+        self.resume_sim()
+        time.sleep(settle_time)
+        self.pause_sim()
+        logger.info(
+            f"[Episode Init] Objects settled for {settle_time:.3f}s, AirSim paused before stable get_obs snapshot"
+        )
+        logger.info(f"[TIMING][AirVLNENV._stabilize_after_objects] total: {time.perf_counter() - stabilize_start:.3f}s")
     
     def _changeEnv(self, need_change: bool = True):
         using_map_list = [item['map_name'] for item in self.batch]
@@ -370,6 +390,7 @@ class AirVLNENV:
             logger.warning(f'[Episode Init] 快系统起点重置异常: {e}')
         
         state_info_results = self.simulator_tool.getSensorInfo()
+        logger.info("[Episode Init] 起飞与初始状态读取完成，等待 _setObjects 后再暂停 AirSim 拍稳定快照")
         
         cnt = 0
         for index_1, item in enumerate(self.machines_info):
@@ -392,15 +413,45 @@ class AirVLNENV:
                 cnt += 1
 
 
+    def pause_sim(self):
+        pause_start = time.perf_counter()
+        for machine_idx, client_group in enumerate(self.simulator_tool.airsim_clients):
+            for scene_idx, client in enumerate(client_group):
+                if client is not None:
+                    client.simPause(True)
+                    logger.info(f"[AirSim Sync] paused machine={machine_idx} scene={scene_idx}")
+        logger.info(f"[TIMING][AirVLNENV.pause_sim] total: {time.perf_counter() - pause_start:.3f}s")
+
+    def resume_sim(self):
+        resume_start = time.perf_counter()
+        for machine_idx, client_group in enumerate(self.simulator_tool.airsim_clients):
+            for scene_idx, client in enumerate(client_group):
+                if client is not None:
+                    client.simPause(False)
+                    logger.info(f"[AirSim Sync] resumed machine={machine_idx} scene={scene_idx}")
+        logger.info(f"[TIMING][AirVLNENV.resume_sim] total: {time.perf_counter() - resume_start:.3f}s")
+
     def get_obs(self):
+        get_obs_start = time.perf_counter()
+        states_start = time.perf_counter()
         obs_states = self._getStates()
+        env_timing_log(f"[TIMING][AirVLNENV.get_obs] _getStates: {time.perf_counter() - states_start:.3f}s")
+        vector_start = time.perf_counter()
         obs, states = self.VectorEnvUtil.get_obs(obs_states)
+        env_timing_log(f"[TIMING][AirVLNENV.get_obs] VectorEnvUtil.get_obs: {time.perf_counter() - vector_start:.3f}s")
         self.sim_states = states
+        logger.info(f"[TIMING][AirVLNENV.get_obs] total: {time.perf_counter() - get_obs_start:.3f}s")
         return obs
 
     def _getStates(self):
+        get_states_start = time.perf_counter()
+        image_start = time.perf_counter()
         responses = self.simulator_tool.getImageResponses()
+        env_timing_log(f"[TIMING][AirVLNENV._getStates] simulator_tool.getImageResponses: {time.perf_counter() - image_start:.3f}s")
+        record_start = time.perf_counter()
         responses_for_record = self.simulator_tool.getImageResponsesForRecord()
+        env_timing_log(f"[TIMING][AirVLNENV._getStates] simulator_tool.getImageResponsesForRecord: {time.perf_counter() - record_start:.3f}s")
+        assemble_start = time.perf_counter()
         cnt = 0
         for item in responses:
             cnt += len(item)
@@ -418,6 +469,8 @@ class AirVLNENV:
                 state = self.sim_states[cnt]
                 states[cnt] = (rgb_images, depth_images, state, rgb_records, depth_records)
                 cnt += 1
+        env_timing_log(f"[TIMING][AirVLNENV._getStates] assemble states: {time.perf_counter() - assemble_start:.3f}s")
+        logger.info(f"[TIMING][AirVLNENV._getStates] total: {time.perf_counter() - get_states_start:.3f}s")
         return states
     
     def _get_current_state(self) -> list:

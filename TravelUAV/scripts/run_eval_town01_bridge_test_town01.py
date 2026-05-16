@@ -2,8 +2,8 @@ import os
 import sys
 import subprocess
 
-# 固定单例测试：Town01 / 00c9b2a9-eaa8-4b18-86ad-9f402e5cbb51
-# 只新增独立脚本，不改现有评测逻辑。
+# 跑 seen_valset 中全部 Town01 任务
+# 任务列表来源：seen_valset_town01_all.json
 
 root_dir = "/mnt/data/TravelUAV"
 model_dir = os.path.join(root_dir, "Model", "LLaMA-UAV")
@@ -31,7 +31,7 @@ cmd = [
     "--vision_tower", os.path.join(root_dir, "Model", "LLaMA-UAV", "model_zoo", "LAVIS", "eva_vit_g.pth"),
     "--image_processor", os.path.join(root_dir, "Model", "LLaMA-UAV", "llamavid", "processor", "clip-patch14-224"),
     "--traj_model_path", os.path.join(model_dir, "work_dirs", "traj_predictor_bs_128_drop_0.1_lr_5e-4"),
-    "--eval_json_path", os.path.join(root_dir, "Dataset", "dataset_split", "data", "uav_dataset", "one_case_town01_bridge_test.json"),
+    "--eval_json_path", os.path.join(root_dir, "Dataset", "dataset_split", "data", "uav_dataset", "seen_valset_town01_all.json"),
     "--map_spawn_area_json_path", os.path.join(root_dir, "Dataset", "dataset_split", "data", "meta", "map_spawnarea_info.json"),
     "--object_name_json_path", os.path.join(root_dir, "Dataset", "dataset_split", "data", "meta", "object_description.json"),
     "--groundingdino_config", os.path.join(root_dir, "src", "model_wrapper", "utils", "GroundingDINO", "groundingdino", "config", "GroundingDINO_SwinT_OGC.py"),
@@ -39,8 +39,8 @@ cmd = [
 
 ]
 
-print("[INFO] Fixed Town01 bridge test case")
-print("[INFO] Episode: Carla_Town01/0a7a07a1-0757-4528-9463-ca6c0eb2ec92")
+print("[INFO] Running all Town01 tasks from seen_valset")
+print("[INFO] Eval JSON:", os.path.join(root_dir, "Dataset", "dataset_split", "data", "uav_dataset", "seen_valset_town01_all.json"))
 print("[INFO] Python:", sys.executable)
 print("[INFO] CWD:", root_dir)
 print("[INFO] CMD:\n ", " ".join(cmd))

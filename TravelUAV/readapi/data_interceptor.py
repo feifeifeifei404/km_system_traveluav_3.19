@@ -14,11 +14,21 @@
 import os
 import sys
 import json
+import time
 import numpy as np
 import torch
 from datetime import datetime
 from pathlib import Path
 import argparse
+from utils.logger import logger
+
+
+DATA_INTERCEPTOR_TIMING_LOG_ENABLED = False
+
+
+def data_interceptor_timing_log(message):
+    if DATA_INTERCEPTOR_TIMING_LOG_ENABLED:
+        data_interceptor_timing_log(message)
 
 
 class DataInterceptor:
@@ -101,6 +111,7 @@ class DataInterceptor:
         - 保存深度图到PNG文件
         - 记录instruction（如果observation中包含）
         """
+        record_start = time.perf_counter()
         step_data = {
             'step': self.current_step,
             'timestamp': datetime.now().isoformat(),
@@ -134,7 +145,9 @@ class DataInterceptor:
             
             # 新增：保存RGB图像到文件
             if self.save_images and rgb_images:
+                rgb_save_start = time.perf_counter()
                 rgb_files = self._save_rgb_images(rgb_images)
+                data_interceptor_timing_log(f"[TIMING][DataInterceptor.record_observation] save rgb images: {time.perf_counter() - rgb_save_start:.3f}s")
                 step_data['rgb_files'] = rgb_files
         
         # 新增：记录并保存深度图
@@ -148,7 +161,9 @@ class DataInterceptor:
             
             # 保存深度图到文件
             if self.save_images and depth_images:
+                depth_save_start = time.perf_counter()
                 depth_files = self._save_depth_images(depth_images)
+                data_interceptor_timing_log(f"[TIMING][DataInterceptor.record_observation] save depth images: {time.perf_counter() - depth_save_start:.3f}s")
                 step_data['depth_files'] = depth_files
         
         # 新增：记录instruction（如果在observation中）
@@ -162,6 +177,7 @@ class DataInterceptor:
             step_data['distance_to_goal'] = observation['distance_to_goal']
         
         print(f"  [Step {self.current_step}] 记录观测数据: 位置={step_data.get('sensors', {}).get('position')}")
+        data_interceptor_timing_log(f"[TIMING][DataInterceptor.record_observation] total: {time.perf_counter() - record_start:.3f}s")
         
         return step_data
     
@@ -184,6 +200,7 @@ class DataInterceptor:
         file_paths = []
         
         for i, img in enumerate(rgb_images):
+            image_start = time.perf_counter()
             if img is None:
                 continue
             
@@ -194,12 +211,26 @@ class DataInterceptor:
             try:
                 # 确保图像是uint8类型
                 if isinstance(img, np.ndarray):
+                    convert_start = time.perf_counter()
                     if img.dtype != np.uint8:
                         img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
+                    data_interceptor_timing_log(
+                        f"[TIMING][DataInterceptor._save_rgb_images] convert camera={camera_name}: "
+                        f"{time.perf_counter() - convert_start:.3f}s"
+                    )
+                    save_start = time.perf_counter()
                     Image.fromarray(img).save(filepath)
+                    data_interceptor_timing_log(
+                        f"[TIMING][DataInterceptor._save_rgb_images] save camera={camera_name}: "
+                        f"{time.perf_counter() - save_start:.3f}s path={filepath}"
+                    )
                     file_paths.append(str(filepath))
             except Exception as e:
                 print(f"[警告] 保存RGB图像失败: {e}")
+            data_interceptor_timing_log(
+                f"[TIMING][DataInterceptor._save_rgb_images] total camera={camera_name}: "
+                f"{time.perf_counter() - image_start:.3f}s"
+            )
         
         return file_paths
     
@@ -222,6 +253,7 @@ class DataInterceptor:
         file_paths = []
         
         for i, img in enumerate(depth_images):
+            image_start = time.perf_counter()
             if img is None:
                 continue
             
@@ -232,20 +264,38 @@ class DataInterceptor:
             try:
                 if isinstance(img, np.ndarray):
                     # 深度图可能是float类型，需要归一化到0-255
+                    normalize_start = time.perf_counter()
                     if img.dtype == np.float32 or img.dtype == np.float64:
                         # 归一化深度值到0-255
                         img_normalized = ((img - img.min()) / (img.max() - img.min() + 1e-8) * 255).astype(np.uint8)
                     else:
                         img_normalized = img.astype(np.uint8)
-                    
+                    data_interceptor_timing_log(
+                        f"[TIMING][DataInterceptor._save_depth_images] normalize camera={camera_name}: "
+                        f"{time.perf_counter() - normalize_start:.3f}s"
+                    )
+                    save_start = time.perf_counter()
                     Image.fromarray(img_normalized).save(filepath)
+                    data_interceptor_timing_log(
+                        f"[TIMING][DataInterceptor._save_depth_images] save png camera={camera_name}: "
+                        f"{time.perf_counter() - save_start:.3f}s path={filepath}"
+                    )
                     file_paths.append(str(filepath))
                     
                     # 同时保存原始深度值为numpy文件（可选，用于精确分析）
                     npy_filepath = filepath.with_suffix('.npy')
+                    npy_save_start = time.perf_counter()
                     np.save(npy_filepath, img)
+                    data_interceptor_timing_log(
+                        f"[TIMING][DataInterceptor._save_depth_images] save npy camera={camera_name}: "
+                        f"{time.perf_counter() - npy_save_start:.3f}s path={npy_filepath}"
+                    )
             except Exception as e:
                 print(f"[警告] 保存深度图失败: {e}")
+            data_interceptor_timing_log(
+                f"[TIMING][DataInterceptor._save_depth_images] total camera={camera_name}: "
+                f"{time.perf_counter() - image_start:.3f}s"
+            )
         
         return file_paths
     
