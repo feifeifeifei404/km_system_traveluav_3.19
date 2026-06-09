@@ -171,7 +171,7 @@ class AirSimSuperBridge(Node):
         self.get_logger().info('控制输入订阅: /goal_pose, /planning/pos_cmd')
         self.get_logger().info('执行开关订阅: /bridge/execution_enabled，默认 False，False 时忽略 /planning/pos_cmd')
         self.get_logger().info('Bridge 不控制 AirSim pause/resume，仅在 execution_enabled=True 时执行 pos_cmd')
-        self.get_logger().info(f'AirSim 运动命令节流: 每 {self.airsim_command_interval:.3f}s 最多调用一次 moveToPositionAsync')
+        self.get_logger().info(f'AirSim 运动命令节流: 每 {self.airsim_command_interval:.3f}s 最多调用一次 AirSim 控制命令')
         self.get_logger().info(f'Bridge 实际连接 AirSim 端口: {self.connected_airsim_port}')
         self.get_logger().info('使用坐标关系: x_ros=y_sim, y_ros=x_sim, z_ros=-z_sim')
         self.get_logger().info('=' * 60)
@@ -417,7 +417,7 @@ class AirSimSuperBridge(Node):
             fused_vel_enu = safe_vel_cmd_enu.copy()
             fused_vel_enu[0] += kp_xy * pos_error_enu[0]
             fused_vel_enu[1] += kp_xy * pos_error_enu[1]
-            fused_vel_enu[2] = 0.0
+            fused_vel_enu[2] = safe_vel_cmd_enu[2] + self.k_pos_z * pos_error_enu[2]
 
             xy_speed = float(np.linalg.norm(fused_vel_enu[:2]))
             if xy_error_norm > 2.0 and xy_speed < min_xy_speed and xy_error_norm > 1e-6:
@@ -426,7 +426,7 @@ class AirSimSuperBridge(Node):
                 xy_speed = min_xy_speed
             
             # 速度限幅，保证平滑；XY 使用范数限幅，避免逐轴 clip 扭曲方向
-            max_vel_xy = 2.0
+            max_vel_xy = 3.0
             max_vel_z = 3.0
             xy_speed = float(np.linalg.norm(fused_vel_enu[:2]))
             if xy_speed > max_vel_xy and xy_speed > 1e-6:
@@ -478,10 +478,10 @@ class AirSimSuperBridge(Node):
                     vehicle_name=self.vehicle_name,
                 )
             else:
-                self.client.moveByVelocityZAsync(
+                self.client.moveByVelocityAsync(
                     vx=float(fused_vel_ned[0]),
                     vy=float(fused_vel_ned[1]),
-                    z=target_z_ned,
+                    vz=float(fused_vel_ned[2]),
                     duration=self.airsim_command_interval * 1.5,
                     yaw_mode=airsim.YawMode(is_rate=False, yaw_or_rate=yaw_cmd_ned_deg),
                     vehicle_name=self.vehicle_name,

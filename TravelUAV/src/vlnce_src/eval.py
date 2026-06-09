@@ -41,8 +41,18 @@ def _to_builtin_list(values):
     return [_to_builtin_number(v) for v in values]
 
 
+def _get_eval_scene_dir_name():
+    eval_save_path = getattr(args, 'eval_save_path', None)
+    if not eval_save_path:
+        return None
+    return os.path.basename(os.path.normpath(eval_save_path)) or None
+
+
 def _get_step_timing_dir(ori_data_dir):
     episode_id = os.path.basename(ori_data_dir.rstrip('/'))
+    eval_scene_dir = _get_eval_scene_dir_name()
+    if eval_scene_dir:
+        return os.path.join('/mnt/data/TravelUAV/result/timing', eval_scene_dir, episode_id, 'step_timing')
     return os.path.join('/mnt/data/TravelUAV/result/timing', episode_id, 'step_timing')
 
 
@@ -237,7 +247,12 @@ def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, rec
 
             if state.collision.has_collided:
                 collision_detected = True
-                logger.warning('[Wait] Collision detected during flight!')
+                logger.warning(
+                    f'[Wait] Collision detected during flight on port {selected_port}! Abort immediately.'
+                )
+                collision_point = _build_trajectory_point(state)
+                trajectory.append(collision_point)
+                return False, trajectory, True, collision_point
 
             target_pos_np = np.array(target_pos, dtype=np.float64)
             diff = curr_pos - target_pos_np
@@ -261,7 +276,7 @@ def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, rec
                             f'Moved {movement:.2f}m in {stuck_timeout}s, dist={dist:.2f}m'
                         )
                         final_stable_state = _sample_final_stable_state(temp_client, selected_port)
-                        return False, trajectory, True, final_stable_state
+                        return False, trajectory, False, final_stable_state
                 last_check_pos = curr_pos.copy()
                 last_check_time = time.time()
 
@@ -386,7 +401,12 @@ def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, rec
 
             if state.collision.has_collided:
                 collision_detected = True
-                logger.warning('[Wait] Collision detected during flight!')
+                logger.warning(
+                    f'[Wait] Collision detected during flight on port {selected_port}! Abort immediately.'
+                )
+                collision_point = _build_trajectory_point(state)
+                trajectory.append(collision_point)
+                return False, trajectory, True, collision_point
 
             target_pos_np = np.array(target_pos, dtype=np.float64)
             diff = curr_pos - target_pos_np
@@ -410,7 +430,7 @@ def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, rec
                             f'Moved {movement:.2f}m in {stuck_timeout}s, dist={dist:.2f}m'
                         )
                         final_stable_state = _sample_final_stable_state(temp_client, selected_port)
-                        return False, trajectory, True, final_stable_state
+                        return False, trajectory, False, final_stable_state
                 last_check_pos = curr_pos.copy()
                 last_check_time = time.time()
 
@@ -481,43 +501,24 @@ def apply_gt_corridor_assist(local_goal, current_pos, gt_trajectory, logger=None
             break
 
     gt_ref = gt_points_np[forward_ref_idx]
-    llm_vec_xy = local_goal[:2] - current_pos[:2]
-    gt_vec_xy = gt_ref[:2] - current_pos[:2]
-    llm_norm_xy = float(np.linalg.norm(llm_vec_xy))
-    gt_norm_xy = float(np.linalg.norm(gt_vec_xy))
-    goal_to_ref_xy = float(np.linalg.norm(local_goal[:2] - gt_ref[:2]))
+    xy_error = float(np.linalg.norm(local_goal[:2] - gt_ref[:2]))
+    z_error = float(abs(local_goal[2] - gt_ref[2]))
 
-    direction_trigger = False
-    if llm_norm_xy > 1e-6 and gt_norm_xy > 1e-6:
-        cos_sim = float(np.dot(llm_vec_xy, gt_vec_xy) / (llm_norm_xy * gt_norm_xy))
-        cos_sim = float(np.clip(cos_sim, -1.0, 1.0))
-        angle_deg = float(np.degrees(np.arccos(cos_sim)))
-        direction_trigger = angle_deg > 45.0
-    else:
-        angle_deg = 0.0
-
-    distance_trigger = goal_to_ref_xy > 3.0
-    if not (direction_trigger or distance_trigger):
+    if not (xy_error > 2.5 or z_error > 1.2):
         return local_goal
 
-    corrected_goal = local_goal.copy()
-    corrected_goal[:2] = 0.8 * local_goal[:2] + 0.2 * gt_ref[:2]
-
-    z_ref_applied = False
-    target_xy_dist = float(np.linalg.norm(local_goal[:2] - gt_points_np[-1][:2]))
-    near_goal_xy = target_xy_dist < 8.0
-    near_traj_end = forward_ref_idx >= len(gt_points_np) - 5
-    z_ref = gt_points_np[-1, 2] if (near_goal_xy or near_traj_end) else gt_ref[2]
-    corrected_goal[2] = 0.8 * local_goal[2] + 0.2 * z_ref
-    z_ref_applied = True
+    strong_correction = xy_error > 4.0 or z_error > 2.0
+    model_weight = 0.5 if strong_correction else 0.8
+    gt_weight = 1.0 - model_weight
+    corrected_goal = model_weight * local_goal + gt_weight * gt_ref
 
     if logger is not None:
         logger.info(
             '[GT Corridor Assist] '
             f'nearest_idx={nearest_idx} ref_idx={forward_ref_idx} '
-            f'angle_deg={angle_deg:.1f} goal_to_ref_xy={goal_to_ref_xy:.2f} '
-            f'direction_trigger={direction_trigger} distance_trigger={distance_trigger} '
-            f'z_ref_applied={z_ref_applied} '
+            f'xy_error={xy_error:.2f} z_error={z_error:.2f} '
+            f'strong_correction={strong_correction} '
+            f'blend={model_weight:.1f}*model+{gt_weight:.1f}*gt_ref '
             f'goal_before={np.round(local_goal, 2)} goal_after={np.round(corrected_goal, 2)}'
         )
 
@@ -774,6 +775,14 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
             pbar.update(n=eval_env.batch_size)
             episode_timing_path = None
 
+            super_client = get_super_ros2_client()
+            super_client.set_bridge_execution(False)
+            logger.info("[Bridge Execution] disabled at episode reset")
+            time.sleep(1.2)
+            super_client.reset_fsm(timeout=15.0)
+            time.sleep(0.8)
+            logger.info("[SUPER] episode reset completed")
+
             for t in range(int(args.maxWaypoints) + 1):
                 raise_if_fast_system_fatal()
                 logger.info('Step: {} \t Completed: {} / {}'.format(t, int(eval_env.index_data)-int(eval_env.batch_size), end_iter))
@@ -841,6 +850,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     
                     token_count_initial = initial_inputs['input_ids'].shape[1]
                     batch_state.tokens_per_step[0].append({"initial_candidates": token_count_initial})
+                    batch_state.llm_calls_per_step[0].append({"initial_candidates": int(num_parallel_thoughts)})
 
                     model_wrapper.model.train()
                     initial_candidates = []
@@ -901,88 +911,14 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                     step_timing['durations']['prepare_inputs'] = _duration_seconds(prepare_start)
                     env_timing_log(f"[TIMING][Step {t}] model_wrapper.prepare_inputs(standard): {step_timing['durations']['prepare_inputs']:.3f}s")
                     
-                    # === 新增：保存慢系统输入的所有非图像内容到文件 ===
-                    try:
-                        episode_id = batch_state.ori_data_dirs[0].split('/')[-1] if batch_state.ori_data_dirs else 'unknown'
-                        debug_log_dir = Path('/mnt/data/TravelUAV/result/input') / episode_id
-                        debug_log_dir.mkdir(parents=True, exist_ok=True)
-                        debug_log_path = debug_log_dir / f'step_{t:04d}_input.txt'
-                        
-                        with open(debug_log_path, 'w', encoding='utf-8') as f:
-                            f.write(f"{'='*80}\n")
-                            f.write(f"[SLOW SYSTEM INPUT DEBUG] Step {t}\n")
-                            f.write(f"{'='*80}\n\n")
-                            
-                            for key, value in inputs.items():
-                                if key in ['images', 'image']:
-                                    f.write(f"  {key}: [SKIPPED - Image Data]\n")
-                                elif isinstance(value, torch.Tensor):
-                                    value_float = value.float().cpu()
-                                    f.write(f"  {key}: shape={value.shape}, dtype={value.dtype}\n")
-                                    if value.numel() < 200:
-                                        f.write(f"    content: {value_float.numpy()}\n")
-                                elif isinstance(value, list):
-                                    if len(value) > 0 and isinstance(value[0], torch.Tensor):
-                                        f.write(f"  {key}: list of {len(value)} tensors\n")
-                                        for i, item in enumerate(value):
-                                            item_float = item.float().cpu()
-                                            f.write(f"    [{i}] shape={item.shape}, dtype={item.dtype}\n")
-                                            if item.numel() < 200:
-                                                f.write(f"        content: {item_float.numpy()}\n")
-                                    else:
-                                        f.write(f"  {key}: {value}\n")
-                                else:
-                                    f.write(f"  {key}: {value}\n")
-                            
-                            if 'prompts' in inputs and inputs['prompts']:
-                                f.write(f"\n[PROMPT TEXT]:\n")
-                                for i, prompt in enumerate(inputs['prompts']):
-                                    f.write(f"  Batch[{i}]:\n")
-                                    f.write(f"    {prompt}\n")
-                            
-                            if 'historys' in inputs and inputs['historys']:
-                                f.write(f"\n[HISTORY WAYPOINTS]:\n")
-                                for i, hist in enumerate(inputs['historys']):
-                                    if isinstance(hist, torch.Tensor):
-                                        hist_np = hist.float().cpu().numpy()
-                                        if len(hist_np) > 0:
-                                            hist_reshaped = hist_np.reshape(-1, 3)
-                                            f.write(f"  Batch[{i}]: {len(hist_reshaped)} waypoints\n")
-                                            f.write(f"    First 3:\n")
-                                            for wp in hist_reshaped[:3]:
-                                                f.write(f"      {wp}\n")
-                                            f.write(f"    Last 3:\n")
-                                            for wp in hist_reshaped[-3:]:
-                                                f.write(f"      {wp}\n")
-                                            f.write(f"    z-range: [{hist_reshaped[:, 2].min():.2f}, {hist_reshaped[:, 2].max():.2f}]\n")
-                            
-                            if 'orientations' in inputs:
-                                f.write(f"\n[ORIENTATION]:\n")
-                                orient = inputs['orientations']
-                                if isinstance(orient, torch.Tensor):
-                                    orient_float = orient.float().cpu().numpy()
-                                    f.write(f"  {orient_float}\n")
-                            
-                            f.write(f"\n[TARGET POSITION]:\n")
-                            f.write(f"  {batch_state.target_positions[0]}\n")
-                            
-                            f.write(f"\n[CURRENT EPISODE INFO]:\n")
-                            if batch_state.episodes and len(batch_state.episodes[0]) > 0:
-                                last_frame = batch_state.episodes[0][-1]
-                                if 'sensors' in last_frame and 'state' in last_frame['sensors']:
-                                    curr_pos = last_frame['sensors']['state']['position']
-                                    f.write(f"  Current Position: {curr_pos}\n")
-                                    dist = np.linalg.norm(np.array(curr_pos) - np.array(batch_state.target_positions[0]))
-                                    f.write(f"  Distance to Target: {dist:.2f}m\n")
-                            
-                            f.write(f"\n{'='*80}\n")
-                        
-                        env_timing_log(f"[DEBUG] Slow system input saved to {debug_log_path}")
-                    except Exception as e:
-                        logger.warning(f"[DEBUG] Failed to save slow system input: {e}")
+                    # 已禁用：慢系统输入调试日志落盘
                     
                     if interceptor:
                         interceptor.add_step_data(interceptor.record_model_input(inputs))
+
+                    token_count = inputs['input_ids'].shape[1]
+                    batch_state.tokens_per_step[0].append({"initial_candidates": int(token_count)})
+                    batch_state.llm_calls_per_step[0].append({"initial_candidates": 1})
                     
                     run_start = _now_perf()
                     final_refined_waypoints, _ = model_wrapper.run(inputs=inputs, episodes=batch_state.episodes, rot_to_targets=rot_to_targets)
@@ -1088,7 +1024,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                             # 3. 阻塞等待并获取轨迹
                             wait_start = _now_perf()
                             arrival_success, super_trajectory, collision_detected, final_stable_state = wait_for_arrival_in_airsim(
-                                eval_env, sub_goal, threshold=2.0, timeout=120.0
+                                eval_env, sub_goal, threshold=2.0, timeout=15.0
                             )
                             step_timing['durations']['wait_for_arrival'] = _duration_seconds(wait_start)
                             env_timing_log(f"[TIMING][Step {t}] wait_for_arrival_in_airsim: {step_timing['durations']['wait_for_arrival']:.3f}s")

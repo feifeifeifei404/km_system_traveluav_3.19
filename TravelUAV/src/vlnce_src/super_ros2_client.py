@@ -18,6 +18,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from perfect_drone_sim.srv import SetInitialPose
+from std_srvs.srv import Trigger
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, UInt16
@@ -34,6 +35,10 @@ class SUPERRos2Client(Node):
         self.set_initial_pose_client = self.create_client(
             SetInitialPose,
             '/perfect_drone/set_initial_pose',
+        )
+        self.reset_fsm_client = self.create_client(
+            Trigger,
+            '/perfect_drone/reset_fsm',
         )
 
         qos_profile = QoSProfile(
@@ -153,6 +158,34 @@ class SUPERRos2Client(Node):
             time.sleep(0.05)
 
         self.get_logger().error('[SUPER] set_initial_pose 调用超时')
+        return False
+
+    def reset_fsm(self, timeout=5.0):
+        if not self.reset_fsm_client.wait_for_service(timeout_sec=timeout):
+            self.get_logger().error('[SUPER] /perfect_drone/reset_fsm 服务不可用')
+            return False
+
+        request = Trigger.Request()
+        future = self.reset_fsm_client.call_async(request)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if future.done():
+                try:
+                    response = future.result()
+                except Exception as e:
+                    self.get_logger().error(f'[SUPER] reset_fsm 调用失败: {e}')
+                    return False
+                if response is None:
+                    self.get_logger().error('[SUPER] reset_fsm 返回空响应')
+                    return False
+                if response.success:
+                    self.get_logger().info(f'[SUPER] reset_fsm 成功: {response.message}')
+                    return True
+                self.get_logger().error(f'[SUPER] reset_fsm 失败: {response.message}')
+                return False
+            time.sleep(0.05)
+
+        self.get_logger().error('[SUPER] reset_fsm 调用超时')
         return False
 
     def clear_goal_offset(self):

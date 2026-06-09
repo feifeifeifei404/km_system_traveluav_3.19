@@ -240,6 +240,7 @@ class AirVLNENV:
         
         self._setObjects()
         self._stabilize_after_objects()
+        self._reset_fast_system_to_stable_airsim_pose()
 
         self.update_measurements()
 
@@ -257,6 +258,74 @@ class AirVLNENV:
             f"[Episode Init] Objects settled for {settle_time:.3f}s, AirSim paused before stable get_obs snapshot"
         )
         logger.info(f"[TIMING][AirVLNENV._stabilize_after_objects] total: {time.perf_counter() - stabilize_start:.3f}s")
+
+    def _reset_fast_system_to_stable_airsim_pose(self, timeout=5.0):
+        try:
+            if not self.simulator_tool.airsim_clients or not self.simulator_tool.airsim_clients[0]:
+                logger.warning('[Episode Init] 没有可用的 AirSim client，无法按稳定真值重置快系统起点')
+                return False
+
+            client = self.simulator_tool.airsim_clients[0][0]
+            if client is None:
+                logger.warning('[Episode Init] AirSim client[0][0] 为 None，无法重置快系统起点')
+                return False
+
+            state = client.getMultirotorState()
+            pos = state.kinematics_estimated.position
+            airsim_sim_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
+            airsim_ros_pos = np.array([airsim_sim_pos[1], airsim_sim_pos[0], -airsim_sim_pos[2]], dtype=np.float64)
+
+            super_client = get_super_ros2_client()
+            super_current_before = super_client.get_current_position()
+            reset_ok = super_client.reset_initial_pose(
+                x=float(airsim_ros_pos[0]),
+                y=float(airsim_ros_pos[1]),
+                z=float(airsim_ros_pos[2]),
+                yaw=0.0,
+                clear_path=True,
+                timeout=timeout,
+            )
+            if not reset_ok:
+                logger.warning('[Episode Init] 快系统起点重置失败，将继续运行')
+                return False
+
+            time.sleep(0.2)
+            super_current_after = super_client.get_current_position()
+            delta_after = None if super_current_after is None else (super_current_after - airsim_ros_pos)
+            delta_before = None if super_current_before is None else (super_current_before - airsim_ros_pos)
+
+            logger.info(
+                f"[Episode Init] Stable AirSim SIM pos: {np.round(airsim_sim_pos, 3).tolist()}"
+            )
+            logger.info(
+                f"[Episode Init] Stable AirSim->ROS pos: {np.round(airsim_ros_pos, 3).tolist()}"
+            )
+            logger.info(
+                f"[Episode Init] SUPER current before reset: "
+                f"{None if super_current_before is None else np.round(super_current_before, 3).tolist()}"
+            )
+            logger.info(
+                f"[Episode Init] SUPER current after reset: "
+                f"{None if super_current_after is None else np.round(super_current_after, 3).tolist()}"
+            )
+            logger.info(
+                f"[Episode Init] Delta before reset (SUPER-AirSimROS): "
+                f"{None if delta_before is None else np.round(delta_before, 3).tolist()}"
+            )
+            logger.info(
+                f"[Episode Init] Delta after reset (SUPER-AirSimROS): "
+                f"{None if delta_after is None else np.round(delta_after, 3).tolist()}"
+            )
+            if delta_after is not None:
+                delta_abs = np.abs(delta_after)
+                logger.info(
+                    f"[Episode Init] Delta after reset abs xyz: {np.round(delta_abs, 3).tolist()} "
+                    f"(expect roughly <= [0.5, 0.5, 0.5])"
+                )
+            return True
+        except Exception as e:
+            logger.warning(f'[Episode Init] 用稳定 AirSim 真值重置快系统起点异常: {e}')
+            return False
     
     def _changeEnv(self, need_change: bool = True):
         using_map_list = [item['map_name'] for item in self.batch]
@@ -344,53 +413,26 @@ class AirVLNENV:
         results = self.simulator_tool.setPoses(poses=poses)
         results = self.simulator_tool.setPoses(poses=poses)
         
-        # ⚠️ 集成SUPER后：Episode初始化完成后需要起飞
-        logger.info("[Episode Init] 无人机重置到起点，准备起飞...")
-        import time
-        time.sleep(1.0)  # 等待setPoses生效
+        # # ⚠️ 集成SUPER后：Episode初始化完成后需要起飞
+        # logger.info("[Episode Init] 无人机重置到起点，准备起飞...")
+        # import time
+        # time.sleep(1.0)  # 等待setPoses生效
         
-        # 自动起飞到安全高度（2.5米）
-        for client_group in self.simulator_tool.airsim_clients:
-            for client in client_group:
-                if client is not None:
-                    client.simPause(False)
-                    client.enableApiControl(True)
-                    client.armDisarm(True)
-                    client.takeoffAsync().join()
-                    client.moveToZAsync(-2.5, 1.5).join()  # AirSim: z=-2.5米
-                    logger.info(f"[Episode Init] 无人机起飞完成")
+        # # 自动起飞到安全高度（2.5米）
+        # for client_group in self.simulator_tool.airsim_clients:
+        #     for client in client_group:
+        #         if client is not None:
+        #             client.simPause(False)
+        #             client.enableApiControl(True)
+        #             client.armDisarm(True)
+        #             client.takeoffAsync().join()
+        #             client.moveToZAsync(-2.5, 1.5).join()  # AirSim: z=-2.5米
+        #             logger.info(f"[Episode Init] 无人机起飞完成")
 
-        # 任务开始时，将快系统 odom 起点重置到当前任务起点（ROS/world）
-        try:
-            super_client = get_super_ros2_client()
-            reset_sim_pos = np.array([
-                start_position_list[0][0],
-                start_position_list[0][1],
-                -2.5,
-            ], dtype=np.float64)
-            reset_ros_pos = np.array(
-                [reset_sim_pos[1], reset_sim_pos[0], -reset_sim_pos[2]],
-                dtype=np.float64,
-            )
-            reset_ok = super_client.reset_initial_pose(
-                x=float(reset_ros_pos[0]),
-                y=float(reset_ros_pos[1]),
-                z=float(reset_ros_pos[2]),
-                yaw=0.0,
-                clear_path=True,
-                timeout=5.0,
-            )
-            if reset_ok:
-                logger.info(
-                    f"[Episode Init] 已重置快系统起点到 ROS/world: {np.round(reset_ros_pos, 3).tolist()}"
-                )
-            else:
-                logger.warning('[Episode Init] 快系统起点重置失败，将继续运行')
-        except Exception as e:
-            logger.warning(f'[Episode Init] 快系统起点重置异常: {e}')
+        # 快系统 odom 起点重置改到 objects settle 之后，使用 AirSim 稳定后的真实位置，避免与 SUPER 当前点错位。
         
         state_info_results = self.simulator_tool.getSensorInfo()
-        logger.info("[Episode Init] 起飞与初始状态读取完成，等待 _setObjects 后再暂停 AirSim 拍稳定快照")
+        logger.info("[Episode Init] 初始状态读取完成，等待 _setObjects 后再暂停 AirSim 拍稳定快照")
         
         cnt = 0
         for index_1, item in enumerate(self.machines_info):

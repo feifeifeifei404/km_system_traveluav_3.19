@@ -144,7 +144,7 @@ def target_distance_increasing_for_10frames(lst):
     return True
 
 
-def target_position_stuck_for_10frames(position_lst, distance_lst, movement_threshold=0.5, distance_improve_threshold=0.5):
+def target_position_stuck_for_10frames(position_lst, distance_lst, movement_threshold=0.05, distance_improve_threshold=0.05):
     """新增诊断逻辑：最近 10 帧几乎没移动，且没有明显接近目标，视为卡死。"""
     if len(position_lst) < 10 or len(distance_lst) < 10:
         return False
@@ -280,6 +280,7 @@ class EvalBatchState:
 
         self.predict_dones = [False] * batch_size
         self.tokens_per_step = [[] for _ in range(batch_size)]  # 记录每一步思考的 token 数
+        self.llm_calls_per_step = [[] for _ in range(batch_size)]  # 记录每一步 LLM 调用次数
         self.total_steps = [0] * batch_size                     # 记录总步数
         self.final_metrics = [{} for _ in range(batch_size)]    # 存储最终要保存的所有指标
         self.step_timings = [[] for _ in range(batch_size)]
@@ -328,15 +329,17 @@ class EvalBatchState:
             self.termination_reasons[i] = f"失败：{reason}"
 
     def update_from_env_output(self, outputs):
-        observations, self.dones, self.collisions, self.oracle_success = [list(x) for x in zip(*outputs)]
-        
-        collisions_from_env = list(self.collisions)
-        dones_before_depth_check = list(self.dones)
-        
+        observations, dones_from_env, collisions_from_env, self.oracle_success = [list(x) for x in zip(*outputs)]
+
+        collisions_from_env = list(collisions_from_env)
+        dones_from_env = list(dones_from_env)
+        self.collisions = list(collisions_from_env)
+        self.dones = list(dones_from_env)
+
         depth_check_start = time.perf_counter()
         self.collisions, self.dones = self.assist.check_collision_by_depth(self.episodes, observations, self.collisions, self.dones)
         logger.info(f"[TIMING] assist.check_collision_by_depth: {time.perf_counter() - depth_check_start:.3f}s")
-        
+
         for i in range(self.batch_size):
             if i in self.envs_to_pause:
                 continue
@@ -350,19 +353,23 @@ class EvalBatchState:
             if self.oracle_success[i]:
                 self.oracle_hit[i] = True
 
-            # 碰撞原因只来自环境碰撞或深度图碰撞。
-            depth_collision_done = (not dones_before_depth_check[i]) and self.dones[i]
-            if collisions_from_env[i] or self.collisions[i] or depth_collision_done:
+            if collisions_from_env[i]:
                 self._mark_failure_reason(i, "碰撞")
+                self.collisions[i] = True
+                self.dones[i] = True
+                continue
 
-            # 保持原版逻辑：连续远离会把 episode 置为 done；这里额外把原因记录为“远离”。
-            # 卡死是新增诊断逻辑：位置几乎不动且没有明显接近目标。
+            if self.dones[i] and self.failure_reasons[i] is None:
+                if target_position_stuck_for_10frames(self.position_history[i], self.distance_to_ends[i]):
+                    self._mark_failure_reason(i, "卡死")
+                elif target_distance_increasing_for_10frames(self.distance_to_ends[i]):
+                    self._mark_failure_reason(i, "远离")
+
             if not self.dones[i]:
                 if target_position_stuck_for_10frames(self.position_history[i], self.distance_to_ends[i]):
                     self.dones[i] = True
                     self._mark_failure_reason(i, "卡死")
                 elif target_distance_increasing_for_10frames(self.distance_to_ends[i]):
-                    self.collisions[i] = True
                     self.dones[i] = True
                     self._mark_failure_reason(i, "远离")
 
@@ -391,7 +398,6 @@ class EvalBatchState:
             self.failure_reasons[i] = None
             self.termination_reasons[i] = "成功：模型主动结束且距离目标<=20m"
         elif self.oracle_hit[i]:
-            self.failure_reasons[i] = None
             self.termination_reasons[i] = "成功：Oracle 判定成功"
         else:
             # 失败原因限定在：碰撞 / 卡死 / 远离 / 超时。
@@ -429,20 +435,34 @@ class EvalBatchState:
                         else:
                             flat_steps.append(item)
                     total_tokens += sum(flat_steps)
+
+                total_llm_calls = 0
+                for step_calls in self.llm_calls_per_step[i]:
+                    total_llm_calls += step_calls.get("initial_candidates", 0)
+                    ref_calls = step_calls.get("refinement_steps", [])
+                    if isinstance(ref_calls, list):
+                        total_llm_calls += sum(ref_calls)
+                    elif ref_calls is not None:
+                        total_llm_calls += int(ref_calls)
                       
                 is_success = bool(self.success[i] or self.oracle_hit[i])
-                elapsed_time_seconds = time.perf_counter() - self.eval_start_time
+                elapsed_time_seconds = sum(
+                    step_timing.get("durations", {}).get("total_step_time", 0.0)
+                    for step_timing in self.step_timings[i]
+                )
                 failure_signals_before_success = []
                 if self.oracle_hit[i] and not self.success[i]:
                     failure_signals_before_success = sorted(self.failure_signals_seen[i])
                 self.final_metrics[i] = {
                     "total_steps": self.total_steps[i],
                     "termination_reason": self.termination_reasons[i],
-                    "failure_reason": None if is_success else self.failure_reasons[i],
+                    "failure_reason": self.failure_reasons[i],
                     "failure_signals_before_success": failure_signals_before_success,
                     "elapsed_time_seconds": elapsed_time_seconds,
                     "is_success": is_success,
                     "success_type": "success" if self.success[i] else ("oracle" if self.oracle_hit[i] else "failure"),
+                    "llm_calls": total_llm_calls,
+                    "llm_calls_per_step": self.llm_calls_per_step[i],
                     "total_tokens": total_tokens,
                     "tokens_per_step": self.tokens_per_step[i]
                 }
