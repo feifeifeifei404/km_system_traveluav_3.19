@@ -350,7 +350,7 @@ class AirVLNSimulatorClientTool:
             logger.error(e)
 
     def move_path_by_waypoints(self, waypoints_list, start_states):
-        velocity = 1
+        velocity = 2
         drivetrain = airsim.DrivetrainType.ForwardOnly
         yaw_mode=airsim.YawMode(is_rate=False)
         lookahead=3

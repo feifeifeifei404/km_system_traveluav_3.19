@@ -45,9 +45,23 @@ def _calculate_progress_score(candidate_endpoint, current_pos):
     distance = np.linalg.norm(np.array(candidate_endpoint) - np.array(current_pos))
     return np.tanh(distance / 10.0)
 
+def _extract_endpoint(candidate):
+    """从候选中提取三维终点，兼容两种格式：
+      - 单点:  [x, y, z]              -> 直接返回该点
+      - 路径:  [[x1,y1,z1], [x2,...]] -> 返回最后一个 waypoint
+    通过维度判断：二维 (N,3) 按路径取 [-1]；一维 (3,) 按单点直接返回。
+    对 list 与 numpy 数组同样适用。
+    """
+    arr = np.asarray(candidate, dtype=np.float64)
+    if arr.ndim >= 2:
+        return arr[-1]
+    return arr
+
+
 def score_and_select_best_waypoint(candidates: list, current_episode: list, target_position: list):
     """
-    对所有候选路径进行评分，并选出最优的一个。
+    对所有候选进行评分，并选出最优的一个。
+    候选既可以是单个 waypoint [x,y,z]，也可以是路径 [[x,y,z],...]。
     """
     if not candidates:
         return None
@@ -56,8 +70,8 @@ def score_and_select_best_waypoint(candidates: list, current_episode: list, targ
     current_pos = current_episode[-1]['sensors']['state']['position']
 
     for candidate_path in candidates:
-        # --- 核心改动：只取路径的最后一个点作为评估对象 ---
-        endpoint = candidate_path[-1]
+        # 兼容单点与路径：统一取三维终点作为评估对象
+        endpoint = _extract_endpoint(candidate_path)
 
         # 用这个终点来计算所有分数
         s_obstacle = _calculate_obstacle_score(endpoint, current_episode)
@@ -73,7 +87,7 @@ def score_and_select_best_waypoint(candidates: list, current_episode: list, targ
         return candidates[0] # 终极备用
 
     best_index = np.argmax(scores)
-    # 返回的是完整的最佳路径，而不仅仅是终点
+    # 返回完整的最佳候选（保持原格式：单点返回单点，路径返回路径）
     best_path = candidates[best_index]
     
     return best_path

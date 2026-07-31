@@ -107,6 +107,21 @@ from src.vlnce_src.super_ros2_client import (
     get_fast_system_fatal_reason,
 )
 
+# =========================================================================
+#  [新增模块] 复杂度评估与大模型切换控制（complexity 模块），对 SUPER 快系统零侵入
+# =========================================================================
+try:
+    from src.complexity import (
+        ComplexityManager,
+        build_complexity_input,
+        get_latest_depth_images,
+        get_latest_drone_state,
+    )
+    HAS_COMPLEXITY = True
+except Exception as _complexity_import_error:  # noqa: BLE001
+    HAS_COMPLEXITY = False
+    print(f"[WARNING] complexity 模块导入失败，将禁用复杂度切换: {_complexity_import_error}")
+
 # def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0):
 #     """
 #     在 AirSim 中轮询，直到无人机接近目标点。
@@ -146,160 +161,6 @@ from src.vlnce_src.super_ros2_client import (
         
 #     logger.warning("[Wait] Timeout! SUPER might be stuck or path is too long.")
 #     return False
-
-def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, record_interval=0.1):
-    """
-    等待 SUPER 执行，但轨迹记录/碰撞判断/到达判断全部基于 AirSim 真值。
-
-    到达判定：
-        3D 距离 dist < threshold（默认 2.0m）
-
-    返回：
-        success (bool): 是否成功到达
-        trajectory (list): 基于 AirSim 真值记录的轨迹
-        collision_detected (bool): 是否检测到碰撞/卡住
-        final_stable_state (dict|None): wait 结束后额外稳定采样得到的最终状态
-    """
-
-    def _connect_wait_client():
-        super_client = get_super_ros2_client()
-        selected_port = super_client.get_connected_airsim_port()
-        if not selected_port:
-            raise RuntimeError('Bridge has not published connected AirSim port yet')
-
-        logger.info(f'[Wait] Using bridge-selected AirSim port {selected_port} for arrival monitoring')
-        client = airsim.MultirotorClient(port=selected_port)
-        client.confirmConnection()
-        state = client.getMultirotorState()
-        pos = state.kinematics_estimated.position
-        curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
-        dist = np.linalg.norm(curr_pos - np.array(target_pos, dtype=np.float64))
-        logger.info(
-            f'[Wait] Probe bridge-selected port={selected_port} current={np.round(curr_pos, 2)} dist_to_target={dist:.2f}m'
-        )
-        return client, selected_port
-
-    def _build_trajectory_point(state):
-        pos = state.kinematics_estimated.position
-        orient = state.kinematics_estimated.orientation
-        return {
-            'sensors': {
-                'state': {
-                    'position': [pos.x_val, pos.y_val, pos.z_val],
-                    'orientation': [orient.x_val, orient.y_val, orient.z_val, orient.w_val],
-                    'linear_velocity': [
-                        state.kinematics_estimated.linear_velocity.x_val,
-                        state.kinematics_estimated.linear_velocity.y_val,
-                        state.kinematics_estimated.linear_velocity.z_val,
-                    ],
-                    'angular_velocity': [
-                        state.kinematics_estimated.angular_velocity.x_val,
-                        state.kinematics_estimated.angular_velocity.y_val,
-                        state.kinematics_estimated.angular_velocity.z_val,
-                    ],
-                    'collision': {
-                        'has_collided': bool(state.collision.has_collided),
-                        'object_name': str(state.collision.object_name),
-                    },
-                }
-            }
-        }
-
-    def _sample_final_stable_state(client, selected_port, settle_seconds=1.0, sample_interval=0.1):
-        deadline = time.time() + settle_seconds
-        latest_point = None
-        while time.time() < deadline:
-            state = client.getMultirotorState()
-            latest_point = _build_trajectory_point(state)
-            time.sleep(sample_interval)
-
-        if latest_point is not None:
-            final_pos = latest_point['sensors']['state']['position']
-            logger.info(
-                f"[Wait] Final stabilized state on port {selected_port}: {np.round(final_pos, 2)}"
-            )
-        return latest_point
-
-    start_time = time.time()
-    logger.info(f"[Wait] Waiting for SUPER to fly to {np.round(target_pos, 2)}...")
-
-    temp_client, selected_port = _connect_wait_client()
-
-    trajectory = []
-    last_record_time = 0.0
-    collision_detected = False
-
-    last_check_pos = None
-    last_check_time = time.time()
-    stuck_timeout = 15.0
-    last_progress_log_time = 0.0
-
-    while time.time() - start_time < timeout:
-        raise_if_fast_system_fatal()
-        try:
-            state = temp_client.getMultirotorState()
-            pos = state.kinematics_estimated.position
-            curr_pos = np.array([pos.x_val, pos.y_val, pos.z_val], dtype=np.float64)
-
-            if time.time() - last_record_time >= record_interval:
-                trajectory.append(_build_trajectory_point(state))
-                last_record_time = time.time()
-
-            if state.collision.has_collided:
-                collision_detected = True
-                logger.warning(
-                    f'[Wait] Collision detected during flight on port {selected_port}! Abort immediately.'
-                )
-                collision_point = _build_trajectory_point(state)
-                trajectory.append(collision_point)
-                return False, trajectory, True, collision_point
-
-            target_pos_np = np.array(target_pos, dtype=np.float64)
-            diff = curr_pos - target_pos_np
-            xy_dist = float(np.linalg.norm(diff[:2]))
-            z_dist = float(abs(diff[2]))
-            dist = float(np.linalg.norm(diff))
-            if time.time() - last_progress_log_time >= 1.0:
-                logger.info(
-                    f'[Wait] port={selected_port} current={np.round(curr_pos, 2)} '
-                    f'dist={dist:.2f}m xy_dist={xy_dist:.2f}m z_dist={z_dist:.2f}m '
-                    f'collision={bool(state.collision.has_collided)}'
-                )
-                last_progress_log_time = time.time()
-
-            if time.time() - last_check_time > stuck_timeout:
-                if last_check_pos is not None:
-                    movement = np.linalg.norm(curr_pos - last_check_pos)
-                    if movement < 0.5:
-                        logger.error(
-                            f'[Wait] CRITICAL: Drone stuck on port {selected_port}! '
-                            f'Moved {movement:.2f}m in {stuck_timeout}s, dist={dist:.2f}m'
-                        )
-                        final_stable_state = _sample_final_stable_state(temp_client, selected_port)
-                        return False, trajectory, False, final_stable_state
-                last_check_pos = curr_pos.copy()
-                last_check_time = time.time()
-
-            if dist < threshold:
-                logger.info(f'[Wait] Arrived on port {selected_port}! Final Dist: {dist:.2f}m')
-                trajectory.append(_build_trajectory_point(state))
-                final_stable_state = _sample_final_stable_state(temp_client, selected_port)
-                if final_stable_state is not None:
-                    trajectory.append(final_stable_state)
-                return True, trajectory, collision_detected, final_stable_state
-
-        except Exception as e:
-            logger.warning(f'[Wait] Temp client failed on port {selected_port}: {e}')
-            time.sleep(1.0)
-
-        time.sleep(0.2)
-
-    final_stable_state = _sample_final_stable_state(temp_client, selected_port)
-    if final_stable_state is not None:
-        trajectory.append(final_stable_state)
-    logger.warning(f'[Wait] Timeout on port {selected_port}!')
-    return False, trajectory, collision_detected, final_stable_state
-
 
 def wait_for_arrival_in_airsim(env, target_pos, threshold=2.0, timeout=60.0, record_interval=0.1):
     """
@@ -747,6 +608,58 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
 
     model_wrapper.eval() 
 
+    # === 初始化复杂度管理器（评估→等级→策略→防抖冷却→深度筛选）与话题发布 ===
+    complexity_manager = None
+    complexity_publisher = None
+    if HAS_COMPLEXITY and getattr(args, 'use_complexity_switch', False):
+        try:
+            from src.complexity import ScoreSmoother, CandidateCooldown
+            evaluator_name = getattr(args, 'complexity_evaluator', 'dummy')
+            # 只给 dummy 传 fixed_score，避免把无关参数塞进其它 evaluator
+            evaluator_kwargs = {}
+            if evaluator_name == 'dummy':
+                evaluator_kwargs['fixed_score'] = float(getattr(args, 'complexity_fixed_score', 0.0))
+            # GroundingDINO 类 evaluator 需要模型路径
+            if evaluator_name in ('dino_semantic', 'dino_uncertainty', 'dino_olv', 'full'):
+                evaluator_kwargs['groundingdino_config'] = getattr(model_args, 'groundingdino_config', None)
+                evaluator_kwargs['groundingdino_model_path'] = getattr(model_args, 'groundingdino_model_path', None)
+            if evaluator_name == 'dino_olv':
+                evaluator_kwargs['normalization_path'] = getattr(
+                    args, 'complexity_dino_olv_normalization_path', None
+                )
+            complexity_manager = ComplexityManager(
+                evaluator_name=evaluator_name,
+                evaluator_kwargs=evaluator_kwargs,
+                smoother=ScoreSmoother(window=int(getattr(args, 'complexity_smooth_window', 5))),
+                cooldown=CandidateCooldown(cooldown_seconds=float(getattr(args, 'complexity_cooldown_seconds', 0.0))),
+            )
+            # 实时安全指标（dino_olv）在导航循环前预加载模型，把配置/权重/CUDA 问题
+            # 暴露在启动阶段，而不是飞行途中；这类 evaluator 的初始化失败必须终止评估，
+            # 不允许静默降级为默认 LLM 策略。
+            evaluator = getattr(complexity_manager, 'evaluator', None)
+            if evaluator is not None and hasattr(evaluator, 'warmup'):
+                logger.info(f"[Complexity] 预加载 evaluator={evaluator_name} ...")
+                evaluator.warmup()
+                logger.info(f"[Complexity] evaluator={evaluator_name} 预加载完成")
+            logger.info(f"[Complexity] 已启用，evaluator={evaluator_name}")
+        except Exception as e:
+            # dino_olv 等严格实时指标：初始化/warmup 失败视为致命错误，直接终止评估。
+            if getattr(args, 'complexity_evaluator', 'dummy') == 'dino_olv':
+                logger.error(f"[Complexity] dino_olv 初始化/预加载失败，终止评估: {e}")
+                raise
+            complexity_manager = None
+            logger.error(f"[Complexity] 初始化失败，禁用复杂度切换: {e}")
+
+        if complexity_manager is not None and getattr(args, 'complexity_publish_topics', True):
+            try:
+                from src.complexity.ros_publisher import ComplexityPublisher
+                super_client_for_pub = get_super_ros2_client()
+                complexity_publisher = ComplexityPublisher(node=super_client_for_pub)
+                logger.info("[Complexity] /complexity/* 话题发布已挂载到 super_ros2_client 节点")
+            except Exception as e:
+                complexity_publisher = None
+                logger.warning(f"[Complexity] 话题发布初始化失败（不影响主流程）: {e}")
+
     with torch.no_grad():
         dataset = BatchIterator(eval_env)
         end_iter = len(dataset)
@@ -774,6 +687,9 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
             batch_state = EvalBatchState(batch_size=eval_env.batch_size, env_batchs=env_batchs, env=eval_env, assist=assist)
             pbar.update(n=eval_env.batch_size)
             episode_timing_path = None
+
+            if complexity_manager is not None:
+                complexity_manager.reset()
 
             super_client = get_super_ros2_client()
             super_client.set_bridge_execution(False)
@@ -820,18 +736,84 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                 
                 final_refined_waypoints = [] # 初始化
 
+                # === 复杂度评估与切换决策（在调用大模型前）===
+                complexity_decision = None
+                if complexity_manager is not None:
+                    try:
+                        cur_episode = batch_state.episodes[0] if batch_state.episodes else []
+                        # 目标 prompt 与原目标检测(DinoMonitor)一致：用目标物体短语 object_infos，
+                        # 而非整条 instruction，保证 dino_uncertainty 的 caption 和目标检测同源。
+                        target_prompt = None
+                        if batch_state.object_infos and len(batch_state.object_infos) > 0:
+                            target_prompt = batch_state.object_infos[0]
+                        if not target_prompt and env_batchs and isinstance(env_batchs[0], dict):
+                            target_prompt = env_batchs[0].get('instruction')
+                        target_position = None
+                        if batch_state.target_positions is not None and len(batch_state.target_positions) > 0:
+                            target_position = batch_state.target_positions[0]
+                        dino_results = getattr(assist, 'dino_results', None)
+                        complexity_input = build_complexity_input(
+                            episode=cur_episode,
+                            target_prompt=target_prompt,
+                            target_position=target_position,
+                            dino_results=dino_results,
+                        )
+                        complexity_decision = complexity_manager.decide(complexity_input)
+                        if complexity_publisher is not None:
+                            try:
+                                complexity_publisher.publish(complexity_decision)
+                            except Exception as pub_err:
+                                logger.warning(f"[Complexity] 话题发布失败: {pub_err}")
+                        step_timing['values']['complexity'] = complexity_decision.to_dict()
+                        # 把复杂度分数挂到"计算它所用的那一帧"上，落盘时与五视角图像按同一 idx 对齐
+                        try:
+                            if cur_episode and isinstance(cur_episode[-1], dict):
+                                cur_episode[-1]['complexity'] = complexity_decision.to_dict()
+                        except Exception as attach_err:
+                            logger.warning(f"[Complexity] 复杂度分数挂帧失败: {attach_err}")
+                        logger.info(
+                            f"[Complexity][Step {t}] score={complexity_decision.result.score:.3f} "
+                            f"smoothed={complexity_decision.result.smoothed_score:.3f} "
+                            f"level={complexity_decision.risk_level.value} v_max={complexity_decision.v_max:.1f} "
+                            f"candidates={complexity_decision.effective_num_candidates} "
+                            f"rounds={complexity_decision.effective_num_rounds}"
+                        )
+                    except Exception as e:
+                        # dino_olv 是严格实时安全指标：evaluator 内部只对可恢复的推理
+                        # RuntimeError 做有限 stale 回退，能传播到这里的都是程序/配置错误，
+                        # 必须终止评估暴露问题，而不是静默退回默认大模型调用。
+                        if getattr(args, 'complexity_evaluator', 'dummy') == 'dino_olv':
+                            logger.error(f"[Complexity] dino_olv 决策出现程序错误，终止评估: {e}")
+                            raise
+                        complexity_decision = None
+                        logger.error(f"[Complexity] 决策失败，回退默认大模型调用: {e}")
+
                 if args.use_budget_forcing:
                     # 1. 获取当前状态的助理提示
                     assist_start = time.perf_counter()
                     assist_notices = batch_state.get_assist_notices()
                     logger.info(f"[TIMING][Step {t}] batch_state.get_assist_notices: {time.perf_counter() - assist_start:.3f}s")
 
-                    # === 使用命令行传入的参数 ===
-                    num_parallel_thoughts = args.num_parallel_thoughts
+                    # === Par/Ser：TTS 测试时扩展参数，由复杂度决策给出 ===
+                    # 五档 (very_low/low/medium/high/very_high) 的 Par×Ser
+                    # 分别为 1×1、2×1、3×1、2×2、3×2，对应计划调用 1/2/3/4/6 次。
+                    # Ser=1 表示不精修；Ser=2 表示每个初始候选串行精修一次。
+                    if complexity_decision is not None:
+                        par_count = int(complexity_decision.effective_num_candidates)
+                        ser_count = int(complexity_decision.effective_num_rounds)
+                    else:
+                        par_count = args.num_parallel_thoughts
+                        ser_count = 1
+                    par_count = max(1, par_count)
+                    ser_count = max(1, ser_count)
 
-                    # --- 1. 生成初始候选 (并行思考) ---
-                    logger.info(f"Step: {t}, Stage 1: Generating {num_parallel_thoughts} initial candidates via Dropout...")
-                    print(f"\n{'='*20} Step [{t}]: Stage 1 - Parallel Thinking {'='*20}")
+                    n_parallel_exploration = par_count
+                    n_serial_refinement = par_count * (ser_count - 1)
+                    n_total_llm_calls = par_count * ser_count
+
+                    # ---------- Stage 1: Parallel Exploration ----------
+                    logger.info(f"Step: {t}, Stage 1: Parallel Exploration - generating Par={par_count} initial candidates...")
+                    print(f"\n{'='*20} Step [{t}]: Stage 1 - Parallel Exploration (Par={par_count}) {'='*20}")
 
                     prepare_start = time.perf_counter()
                     initial_inputs, rot_to_targets, _, _ = model_wrapper.prepare_inputs(
@@ -839,7 +821,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                         refinement_step=0, intermediate_waypoint=None
                     )
                     logger.info(f"[TIMING][Step {t}] model_wrapper.prepare_inputs(initial): {time.perf_counter() - prepare_start:.3f}s")
-                    
+
                     # === 记录点3: 记录模型输入 ===
                     if interceptor:
                         try:
@@ -847,14 +829,24 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                             interceptor.add_step_data(input_data)
                         except Exception as e:
                             print(f"[WARNING] 模型输入记录失败: {e}")
-                    
+
                     token_count_initial = initial_inputs['input_ids'].shape[1]
-                    batch_state.tokens_per_step[0].append({"initial_candidates": token_count_initial})
-                    batch_state.llm_calls_per_step[0].append({"initial_candidates": int(num_parallel_thoughts)})
+                    batch_state.tokens_per_step[0].append({
+                        "parallel_exploration": int(n_parallel_exploration),
+                        "serial_refinement": int(n_serial_refinement),
+                        "total": int(n_total_llm_calls),
+                        "tokens_initial": int(token_count_initial),
+                    })
+                    batch_state.llm_calls_per_step[0].append({
+                        "parallel_exploration": int(n_parallel_exploration),
+                        "serial_refinement": int(n_serial_refinement),
+                        "total": int(n_total_llm_calls),
+                        "initial_candidates": int(n_total_llm_calls),  # 兼容旧统计字段
+                    })
 
                     model_wrapper.model.train()
                     initial_candidates = []
-                    for i in range(num_parallel_thoughts):
+                    for i in range(par_count):
                         run_start = time.perf_counter()
                         _, intermediate_outputs = model_wrapper.run(
                             inputs=initial_inputs, episodes=batch_state.episodes, rot_to_targets=rot_to_targets
@@ -863,20 +855,61 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                         if intermediate_outputs.get("waypoints_llm_new") is not None and len(intermediate_outputs.get("waypoints_llm_new")) > 0:
                             new_candidate = intermediate_outputs.get("waypoints_llm_new")[0]
                             initial_candidates.append(new_candidate)
-                            
-                            formatted_coords = np.round(new_candidate, 2)
-                            print(f"    [Parallel Thought #{i+1}] Predicted Coords (World): {formatted_coords}")
+                            print(f"    [Parallel #{i+1}] Initial Coords (World): {np.round(new_candidate, 2)}")
+
+                    # ---------- Stage 2: Serial Refinement ----------
+                    # Ser==1：不精修，直接用初始候选；Ser>=2：每个初始候选作为 intermediate_waypoint
+                    # 送回 prepare_inputs(refinement_step=1) 让大模型自我反思修正一次。
+                    if ser_count <= 1 or not initial_candidates:
+                        refined_candidates = list(initial_candidates)
+                        logger.info(f"Step: {t}, Stage 2: Serial Refinement skipped (Ser={ser_count}).")
+                        print(f"\n{'-'*20} Step [{t}]: Stage 2 - Serial Refinement skipped (Ser={ser_count}) {'-'*20}")
+                    else:
+                        logger.info(f"Step: {t}, Stage 2: Serial Refinement - refining {len(initial_candidates)} candidates (Ser={ser_count})...")
+                        print(f"\n{'-'*20} Step [{t}]: Stage 2 - Serial Refinement (Ser={ser_count}) {'-'*20}")
+                        refined_candidates = []
+                        for i, cand in enumerate(initial_candidates):
+                            refined = cand
+                            # refinement_step 从 1 到 Ser-1，对该候选做 (Ser-1) 次串行自我修正
+                            for r in range(1, ser_count):
+                                try:
+                                    refine_inputs, refine_rot, _, _ = model_wrapper.prepare_inputs(
+                                        batch_state.episodes, batch_state.target_positions, assist_notices,
+                                        refinement_step=r, intermediate_waypoint=refined
+                                    )
+                                    _, refine_out = model_wrapper.run(
+                                        inputs=refine_inputs, episodes=batch_state.episodes, rot_to_targets=refine_rot
+                                    )
+                                    if refine_out.get("waypoints_llm_new") is not None and len(refine_out.get("waypoints_llm_new")) > 0:
+                                        refined = refine_out.get("waypoints_llm_new")[0]
+                                except Exception as refine_err:
+                                    logger.error(f"[TTS] 候选 #{i+1} refine 失败，保留上一版: {refine_err}")
+                                    break
+                            refined_candidates.append(refined)
+                            print(f"    [Refine #{i+1}] {np.round(cand, 2)} -> {np.round(refined, 2)}")
 
                     model_wrapper.model.eval()
 
-                    # --- 2. 直接对并行候选择优，不再做串行 refinement ---
-                    logger.info(f"Step: {t}, Stage 2: Scoring and selecting the best parallel candidate...")
-                    print(f"\n{'-'*20} Step [{t}]: Stage 2 - Final Selection {'-'*20}")
+                    step_timing['values']['tts'] = {
+                        'parallel_exploration': int(n_parallel_exploration),
+                        'serial_refinement': int(n_serial_refinement),
+                        'total': int(n_total_llm_calls),
+                        'num_initial': len(initial_candidates),
+                        'num_refined': len(refined_candidates),
+                    }
+                    logger.info(
+                        f"[TTS][Step {t}] parallel_exploration={n_parallel_exploration} "
+                        f"serial_refinement={n_serial_refinement} total={n_total_llm_calls}"
+                    )
+
+                    # ---------- Stage 3: 评分择优（深度信息通过 scoring_util 的 obstacle score 参与）----------
+                    logger.info(f"Step: {t}, Stage 3: Scoring and selecting the best candidate...")
+                    print(f"\n{'-'*20} Step [{t}]: Stage 3 - Final Selection {'-'*20}")
 
                     best_waypoint = None
-                    if initial_candidates:
+                    if refined_candidates:
                         best_waypoint = score_and_select_best_waypoint(
-                            candidates=initial_candidates,
+                            candidates=refined_candidates,
                             current_episode=batch_state.episodes[0],
                             target_position=batch_state.target_positions[0]
                         )
@@ -896,7 +929,7 @@ def eval(model_wrapper: BaseModelWrapper, assist: Assist, eval_env: AirVLNENV, e
                         try:
                             output_record = {
                                 'waypoints_llm_new': initial_candidates,
-                                'refined_waypoints': [],
+                                'refined_waypoints': refined_candidates,
                                 'waypoints_world': final_refined_waypoints
                             }
                             output_data = interceptor.record_model_output(output_record)
@@ -1244,7 +1277,7 @@ if __name__ == "__main__":
         os.makedirs(eval_save_path)
 
     interceptor = None
-    record_data = getattr(args, 'record_data', True) # 默认为 True 或者从 args 读取
+    record_data = getattr(args, 'record_data', False)  # 默认关闭数据记录，如需开启可通过 args.record_data 显式打开
     if HAS_INTERCEPTOR and record_data:
         try:
             record_dir = getattr(args, 'record_dir', './debug_data')

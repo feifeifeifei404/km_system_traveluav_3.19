@@ -80,6 +80,44 @@ class CommonArguments:
         }
     )
 
+    # === 复杂度评估与大模型切换控制参数 (complexity 模块) ===
+    use_complexity_switch: bool = field(
+        default=False,
+        metadata={
+            "help": "启用复杂度评估驱动的大模型候选切换与速度限幅控制。"
+        }
+    )
+    complexity_evaluator: str = field(
+        default="dummy",
+        metadata={
+            "help": "复杂度评估方法: dummy/depth/dsp/dsp_depth/icnet/glcm_tamura/dino_semantic/dino_uncertainty/dino_olv/full。"
+        }
+    )
+    complexity_dino_olv_normalization_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "可选：dino_olv 标准化参数 JSON；缺省时使用与 dino_semantic 对应的固定参数。"
+        }
+    )
+    complexity_fixed_score: float = field(
+        default=0.0,
+        metadata={
+            "help": "DummyEvaluator 写死返回的复杂度分数（架构跑通用）。"
+        }
+    )
+    complexity_smooth_window: int = field(
+        default=1,
+        metadata={"help": "复杂度分数滑动平均窗口长度（防抖）。1 表示不平滑（低频决策场景推荐）。"}
+    )
+    complexity_cooldown_seconds: float = field(
+        default=0.0,
+        metadata={"help": "慢思考多候选生成的冷却时间（秒）；0 表示关闭冷却。"}
+    )
+    complexity_publish_topics: bool = field(
+        default=True,
+        metadata={"help": "是否发布 /complexity/* 调试与控制话题。"}
+    )
+
     # === 数据记录参数 ===
     record_dir: str = field(
         default='./debug_data',

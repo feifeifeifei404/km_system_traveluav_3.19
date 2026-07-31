@@ -67,12 +67,13 @@ def save_to_dataset_eval(episodes, path, ori_traj_dir, final_metrics=None):
     root_path = os.path.join(path)
     if not os.path.exists(root_path):
         os.makedirs(root_path)
-    folder_names = ['log'] + RGB_FOLDER + DEPTH_FOLDER
+    folder_names = ['log', 'complexity'] + RGB_FOLDER + DEPTH_FOLDER
     for folder_name in folder_names:
         os.makedirs(os.path.join(root_path, folder_name), exist_ok=True)
     print(root_path)
     save_logs(episodes, root_path)
     save_images(episodes, root_path)
+    save_complexity(episodes, root_path)
 
     ori_obj = os.path.join(ori_traj_dir, 'object_description.json')
     target_obj = os.path.join(root_path, 'object_description.json')
@@ -98,6 +99,36 @@ def save_logs(episodes, trajectory_dir):
             json.dump(info, f)
         env_timing_log(f"[TIMING][save_logs] frame={idx}: {time.perf_counter() - frame_start:.3f}s")
     env_timing_log(f"[TIMING][save_logs] total frames={len(episodes)}: {time.perf_counter() - save_logs_start:.3f}s")
+
+def save_complexity(episodes, trajectory_dir):
+    """保存每步场景复杂度分数，与五视角图像并列、按同一帧 idx 对齐。
+
+    复杂度分数在 eval 主循环中由 ComplexityManager 计算，并挂到当时所用的那一帧
+    （episode['complexity']）。这里按帧 idx 落盘成 complexity/<idx>.json，使其与
+    frontcamera/<idx>.png 等五视角图像一一对应。
+
+    只有挂了复杂度的帧（通常是每个决策步带 rgb 的关键帧）才会写文件；
+    中间轨迹帧没有复杂度信息，跳过。同时额外写一个 complexity_scores.json 汇总，便于分析。
+    """
+    save_start = time.perf_counter()
+    save_dir = os.path.join(trajectory_dir, 'complexity')
+    os.makedirs(save_dir, exist_ok=True)
+    summary = []
+    for idx, episode in enumerate(episodes):
+        if not isinstance(episode, dict):
+            continue
+        comp = episode.get('complexity')
+        if comp is None:
+            continue
+        record = {'frame': idx}
+        record.update(comp)
+        with open(os.path.join(save_dir, str(idx).zfill(6) + '.json'), 'w') as f:
+            json.dump(record, f, ensure_ascii=False, indent=2, default=str)
+        summary.append(record)
+    # 轨迹级汇总
+    with open(os.path.join(trajectory_dir, 'complexity_scores.json'), 'w') as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
+    env_timing_log(f"[TIMING][save_complexity] saved {len(summary)} frames: {time.perf_counter() - save_start:.3f}s")
 
 def save_images(episodes, trajectory_dir):
     save_images_start = time.perf_counter()
