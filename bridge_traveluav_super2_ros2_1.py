@@ -32,7 +32,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool, Float32, UInt16
+from std_msgs.msg import Bool, UInt16
 from tf2_ros import TransformBroadcaster
 
 from mars_quadrotor_msgs.msg import PositionCommand
@@ -134,11 +134,6 @@ class AirSimSuperBridge(Node):
         self.last_cmd_enu_z = None  # 记录上一拍指令的 z，用于单调保护
         self.z_descent_count = 0     # 连续下降计数
 
-        # 复杂度速度上限：默认 4.0（very_low 档），由 /complexity/vmax 动态更新
-        self.complexity_vmax = 4.0
-        self.default_max_vel_xy = 4.0
-        self.default_max_vel_z = 4.0
-
         self.connected_airsim_port = 0
         self.client = self._connect_airsim()
 
@@ -150,14 +145,6 @@ class AirSimSuperBridge(Node):
             Bool,
             '/bridge/execution_enabled',
             self.execution_enabled_callback,
-            10,
-        )
-
-        # 订阅复杂度速度上限，对 SUPER 输出速度做限幅
-        self.vmax_sub = self.create_subscription(
-            Float32,
-            '/complexity/vmax',
-            self.complexity_vmax_callback,
             10,
         )
 
@@ -260,23 +247,6 @@ class AirSimSuperBridge(Node):
             self.get_logger().info(
                 f'[Bridge Execution] execution_enabled={self.execution_enabled}; '
                 f'executed_cmd_count={self.executed_cmd_count}, ignored_cmd_count={self.ignored_cmd_count}'
-            )
-
-    def complexity_vmax_callback(self, msg: Float32):
-        new_vmax = float(msg.data)
-        # 合理范围保护，避免异常值（如 0 或负数）卡死无人机
-        if not (0.1 <= new_vmax <= 10.0):
-            self.get_logger().warn(
-                f'[Complexity] 忽略异常 v_max={new_vmax:.2f}（合理区间 0.1~10.0）',
-                throttle_duration_sec=2.0,
-            )
-            return
-        with self.lock:
-            previous = self.complexity_vmax
-            self.complexity_vmax = new_vmax
-        if abs(previous - new_vmax) > 1e-3:
-            self.get_logger().info(
-                f'[Complexity] 速度上限更新: {previous:.2f} -> {new_vmax:.2f} m/s'
             )
 
     def publish_connected_airsim_port(self):
@@ -456,11 +426,8 @@ class AirSimSuperBridge(Node):
                 xy_speed = min_xy_speed
             
             # 速度限幅，保证平滑；XY 使用范数限幅，避免逐轴 clip 扭曲方向
-            # 速度上限受复杂度等级控制：订阅 /complexity/vmax 动态调整
-            with self.lock:
-                complexity_vmax = self.complexity_vmax
-            max_vel_xy = min(self.default_max_vel_xy, complexity_vmax)
-            max_vel_z = min(self.default_max_vel_z, complexity_vmax)
+            max_vel_xy = 3.0
+            max_vel_z = 3.0
             xy_speed = float(np.linalg.norm(fused_vel_enu[:2]))
             if xy_speed > max_vel_xy and xy_speed > 1e-6:
                 scale = max_vel_xy / xy_speed

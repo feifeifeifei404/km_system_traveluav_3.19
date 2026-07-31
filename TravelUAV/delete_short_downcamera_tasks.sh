@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-result_base="/mnt/data/TravelUAV/result/eval_closeloop/eval_town05"
-timing_base="/mnt/data/TravelUAV/result/timing/eval_town05"
-threshold=5
+result_base="/mnt/data/TravelUAV/result/eval_closeloop/eval_Modular"
+timing_base="/mnt/data/TravelUAV/result/timing/eval_Modular"
+threshold=2
 mode="${1:-dry-run}"
 
 if [ ! -d "$result_base" ]; then
